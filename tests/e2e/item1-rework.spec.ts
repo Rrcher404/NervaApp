@@ -48,6 +48,19 @@ test.describe("HIGH: SSRF — /api/enrich refuses private addresses", () => {
     "http://10.0.0.1/",
     "http://192.168.1.1/",
     "http://[::1]:4599/",
+    // IPv4-mapped IPv6 — this was a LIVE bypass. The WHATWG URL parser
+    // canonicalises "[::ffff:127.0.0.1]" to "[::ffff:7f00:1]" before any guard
+    // sees it, so a regex against the dotted form never matched and the whole
+    // ::ffff:0:0/96 range walked straight through to an internal service.
+    "http://[::ffff:127.0.0.1]:4599/",
+    "http://[::ffff:169.254.169.254]/",
+    "http://[::ffff:10.0.0.1]/",
+    "http://[0:0:0:0:0:ffff:127.0.0.1]:4599/",
+    "http://[::ffff:7f00:1]:4599/", // the canonicalised form, directly
+    "http://[64:ff9b::127.0.0.1]/", // NAT64 well-known prefix
+    "http://[fe80::1]/", // link-local
+    "http://[fc00::1]/", // unique-local
+    "http://0.0.0.0:4599/",
   ];
 
   for (const url of blocked) {

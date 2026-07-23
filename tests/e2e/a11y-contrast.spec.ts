@@ -1,9 +1,16 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 /**
- * WCAG AA guard. Halvorsen found five failing pairs in the item-1 gate; this
- * spec computes real contrast ratios from COMPUTED styles so they cannot
- * silently regress. DESIGN-PRINCIPLES §5: every text/background pair passes AA.
+ * WCAG AA guard. DESIGN-PRINCIPLES §5: every text/background pair passes AA.
+ *
+ * This guard has been wrong twice, and both times in the same shape — it
+ * reported clean while a real failure sat on the page, because it never looked
+ * at the thing that was failing:
+ *   1. ::placeholder is a pseudo-element, never a child text node.
+ *   2. CSS opacity is invisible to computed colour — the disabled button read
+ *      14.97:1 while rendering at 2.46:1.
+ * Both are now handled. The third recurrence of the pattern was "states the
+ * test never renders", so the error surfaces are exercised too.
  */
 
 function parseRGB(s: string): [number, number, number, number] {
@@ -22,7 +29,6 @@ function luminance([r, g, b]: [number, number, number]): number {
   return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
 }
 
-/** Alpha-composite fg over bg, then compute the WCAG contrast ratio. */
 function contrast(fg: string, bg: string): number {
   const [fr, fg_, fb, fa] = parseRGB(fg);
   const [br, bg_, bb] = parseRGB(bg);
@@ -37,28 +43,23 @@ function contrast(fg: string, bg: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-test("every rendered text node meets WCAG AA against the parchment ground", async ({
-  page,
-}) => {
-  await page.goto("/");
-  await page.evaluate(() => indexedDB.deleteDatabase("sieve"));
-  await page.reload();
-  await expect(page.getByTestId("capture-input")).toBeVisible();
+interface Sample {
+  text: string;
+  color: string;
+  bg: string;
+  size: number;
+  weight: string;
+}
 
-  // seed one of each state so the catch card, citation line and URL all render
-  await page.getByTestId("capture-input").fill("https://example.com/");
-  await page.getByTestId("capture-submit").click();
-  await expect(page.getByTestId("catch-item")).toHaveCount(1);
-
-  // Let every running animation settle. Sampling mid-stamp reads opacity 0 and
-  // reports a 1.00:1 "failure" that is really a measurement artifact.
+async function sampleContrast(page: Page): Promise<Sample[]> {
+  // Let animations settle — sampling mid-stamp reads opacity 0 and reports a
+  // phantom 1.00:1.
   await page.evaluate(() =>
     Promise.allSettled(document.getAnimations().map((a) => a.finished)),
   );
 
-  const samples = await page.evaluate(() => {
-    // Tailwind 4 emits oklab() for alpha-modified colours. Resolve anything
-    // the browser can parse down to sRGB by painting it and reading it back.
+  return page.evaluate(() => {
+    // Tailwind 4 emits oklab(); resolve anything the browser can parse to sRGB.
     const canvas = document.createElement("canvas");
     canvas.width = canvas.height = 1;
     const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
@@ -72,11 +73,7 @@ test("every rendered text node meets WCAG AA against the parchment ground", asyn
       return `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(4)})`;
     };
 
-    // Effective opacity = product of every ancestor's opacity. Computed colour
-    // ignores it entirely, so a 14.97:1 pair inside an opacity-40 wrapper is
-    // really 2.46:1 on screen. The ::placeholder fix below closed one instance
-    // of "reports clean while a real failure sits on the page"; this closes the
-    // structurally identical one.
+    /** Product of every ancestor's opacity — computed colour ignores it. */
     const effectiveOpacity = (el: Element): number => {
       let o = 1;
       let cur: Element | null = el;
@@ -87,7 +84,6 @@ test("every rendered text node meets WCAG AA against the parchment ground", asyn
       }
       return o;
     };
-    /** Composite an rgba string through an extra opacity onto a background. */
     const applyOpacity = (fg: string, bg: string, o: number): string => {
       if (o >= 0.999) return fg;
       const f = fg.match(/[\d.]+/g)!.map(Number);
@@ -98,31 +94,37 @@ test("every rendered text node meets WCAG AA against the parchment ground", asyn
       }, 1)`;
     };
 
-    const out: { text: string; color: string; bg: string; size: number; weight: string }[] =
-      [];
+    const pageBg = toRGBA(getComputedStyle(document.body).backgroundColor);
+    const nearestBg = (start: Element): string => {
+      let el: Element | null = start;
+      while (el) {
+        const c = toRGBA(getComputedStyle(el).backgroundColor);
+        if (c && !/rgba\(0, 0, 0, 0(\.0+)?\)|transparent/.test(c)) return c;
+        el = el.parentElement;
+      }
+      return pageBg;
+    };
+
+    const out: Sample[] = [];
+    interface Sample {
+      text: string;
+      color: string;
+      bg: string;
+      size: number;
+      weight: string;
+    }
+
     const walk = (el: Element) => {
       for (const node of Array.from(el.childNodes)) {
         if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) {
           const parent = node.parentElement!;
           const cs = getComputedStyle(parent);
-          // find the nearest non-transparent background
-          let bgEl: Element | null = parent;
-          let bg = "rgba(255, 255, 255, 1)";
-          while (bgEl) {
-            const c = toRGBA(getComputedStyle(bgEl).backgroundColor);
-            if (c && !/rgba\(0, 0, 0, 0(\.0+)?\)|transparent/.test(c)) {
-              bg = c;
-              break;
-            }
-            bgEl = bgEl.parentElement;
-          }
-          // The page background anything translucent ultimately sits on.
-          const pageBg = toRGBA(getComputedStyle(document.body).backgroundColor);
           const o = effectiveOpacity(parent);
+          const bg = applyOpacity(nearestBg(parent), pageBg, o);
           out.push({
             text: node.textContent.trim().slice(0, 45),
-            color: applyOpacity(toRGBA(cs.color), applyOpacity(bg, pageBg, o), o),
-            bg: applyOpacity(bg, pageBg, o),
+            color: applyOpacity(toRGBA(cs.color), bg, o),
+            bg,
             size: parseFloat(cs.fontSize),
             weight: cs.fontWeight,
           });
@@ -132,10 +134,7 @@ test("every rendered text node meets WCAG AA against the parchment ground", asyn
     };
     walk(document.body);
 
-    // ::placeholder is a pseudo-element and NEVER a child text node, so the
-    // walk above cannot see it. Halvorsen caught this test reporting a clean
-    // pass while a real 3.40:1 failure sat on the page. A guard with a blind
-    // spot is worse than no guard.
+    // ::placeholder is a pseudo-element and NEVER a child text node.
     for (const el of Array.from(
       document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
         "input[placeholder], textarea[placeholder]",
@@ -143,34 +142,25 @@ test("every rendered text node meets WCAG AA against the parchment ground", asyn
     )) {
       if (!el.placeholder?.trim()) continue;
       const cs = getComputedStyle(el, "::placeholder");
-      let bgEl: Element | null = el;
-      let bg = "rgba(255, 255, 255, 1)";
-      while (bgEl) {
-        const c = toRGBA(getComputedStyle(bgEl).backgroundColor);
-        if (c && !/rgba\(0, 0, 0, 0(\.0+)?\)|transparent/.test(c)) {
-          bg = c;
-          break;
-        }
-        bgEl = bgEl.parentElement;
-      }
+      const o = effectiveOpacity(el);
+      const bg = applyOpacity(nearestBg(el), pageBg, o);
       out.push({
         text: `::placeholder "${el.placeholder.trim().slice(0, 20)}"`,
-        color: toRGBA(cs.color),
+        color: applyOpacity(toRGBA(cs.color), bg, o),
         bg,
         size: parseFloat(cs.fontSize || getComputedStyle(el).fontSize),
         weight: cs.fontWeight || getComputedStyle(el).fontWeight,
       });
     }
-
     return out;
   });
+}
 
-  expect(samples.length).toBeGreaterThan(5);
-
+function assertAA(samples: Sample[], scenario: string) {
+  expect(samples.length, `${scenario}: nothing sampled`).toBeGreaterThan(3);
   const failures: string[] = [];
   for (const s of samples) {
     const bold = Number(s.weight) >= 700;
-    // WCAG large text: >=24px, or >=18.66px bold
     const isLarge = s.size >= 24 || (bold && s.size >= 18.66);
     const required = isLarge ? 3.0 : 4.5;
     const ratio = contrast(s.color, s.bg);
@@ -180,6 +170,46 @@ test("every rendered text node meets WCAG AA against the parchment ground", asyn
       );
     }
   }
+  expect(failures, `${scenario} — WCAG AA failures:\n${failures.join("\n")}`).toHaveLength(
+    0,
+  );
+}
 
-  expect(failures, `WCAG AA failures:\n${failures.join("\n")}`).toHaveLength(0);
+test("cold open, and a catch with its citation, meet AA", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => indexedDB.deleteDatabase("sieve"));
+  await page.reload();
+  await expect(page.getByTestId("capture-input")).toBeVisible();
+
+  // cold open: empty state AND the disabled primary button
+  assertAA(await sampleContrast(page), "cold open");
+
+  await page.getByTestId("capture-input").fill("https://example.com/");
+  await page.getByTestId("capture-submit").click();
+  await expect(page.getByTestId("catch-item")).toHaveCount(1);
+  assertAA(await sampleContrast(page), "after a catch");
+});
+
+test("the crisis surfaces meet AA too", async ({ page }) => {
+  // Halvorsen: "the two surfaces built for an actual crisis are exactly the two
+  // the guard has never once looked at."
+  await page.addInitScript(() => {
+    Object.defineProperty(IDBFactory.prototype, "open", {
+      configurable: true,
+      writable: true,
+      value: () => {
+        throw new DOMException("Quota exceeded", "QuotaExceededError");
+      },
+    });
+  });
+  await page.goto("/");
+  await expect(page.getByTestId("capture-input")).toBeVisible();
+
+  await expect(page.getByTestId("storage-down")).toBeVisible();
+  assertAA(await sampleContrast(page), "storage-down banner");
+
+  await page.getByTestId("capture-input").fill("a thought that will not save");
+  await page.getByTestId("capture-submit").click();
+  await expect(page.getByTestId("save-error")).toBeVisible();
+  assertAA(await sampleContrast(page), "save-error banner");
 });

@@ -48,15 +48,61 @@ function isPrivateIPv4(ip: string): boolean {
   return false;
 }
 
+/** Expand any IPv6 textual form to its 8 numeric hextets. */
+function hextets(ip: string): number[] | null {
+  let s = ip.toLowerCase();
+  // A trailing dotted-quad (::ffff:127.0.0.1) — rewrite it as two hextets.
+  const dotted = s.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/);
+  if (dotted) {
+    const q = dotted[2].split(".").map(Number);
+    if (q.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
+    s = `${dotted[1]}${((q[0] << 8) | q[1]).toString(16)}:${((q[2] << 8) | q[3]).toString(16)}`;
+  }
+  const [head, tail, ...extra] = s.split("::");
+  if (extra.length > 0) return null;
+  const parse = (part: string) =>
+    part ? part.split(":").filter(Boolean).map((h) => parseInt(h, 16)) : [];
+  const a = parse(head);
+  const b = tail === undefined ? [] : parse(tail);
+  if (tail === undefined) return a.length === 8 ? a : null;
+  const fill = 8 - a.length - b.length;
+  if (fill < 0) return null;
+  const out = [...a, ...Array(fill).fill(0), ...b];
+  return out.length === 8 && out.every((n) => !Number.isNaN(n) && n >= 0 && n <= 0xffff)
+    ? out
+    : null;
+}
+
 function isPrivateIPv6(ip: string): boolean {
-  const lower = ip.toLowerCase();
-  if (lower === "::1" || lower === "::") return true;
-  // IPv4-mapped (::ffff:127.0.0.1) — check the embedded v4 address
-  const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped) return isPrivateIPv4(mapped[1]);
-  const head = lower.split(":")[0];
-  if (/^f[cd]/.test(head)) return true; // fc00::/7 unique-local
-  if (/^fe[89ab]/.test(head)) return true; // fe80::/10 link-local
+  const h = hextets(ip);
+  if (!h) return true; // unparseable → refuse
+
+  // ::1 loopback and :: unspecified
+  if (h.every((x, i) => (i < 7 ? x === 0 : true)) && (h[7] === 1 || h[7] === 0)) {
+    return true;
+  }
+
+  // IPv4-mapped ::ffff:0:0/96 — check NUMERICALLY, not by text pattern.
+  // The WHATWG URL parser canonicalises "[::ffff:127.0.0.1]" into
+  // "[::ffff:7f00:1]" before any guard sees it, so a regex against the
+  // dotted-decimal form never matches and the entire range walks straight
+  // through. This bypass was live and reached an internal service.
+  if (h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0) {
+    // ::ffff:a.b.c.d (mapped) and ::a.b.c.d (deprecated compatible)
+    if (h[5] === 0xffff || h[5] === 0) {
+      const v4 = `${h[6] >> 8}.${h[6] & 0xff}.${h[7] >> 8}.${h[7] & 0xff}`;
+      return isPrivateIPv4(v4);
+    }
+  }
+
+  // NAT64 / well-known prefix 64:ff9b::/96 wrapping a private v4
+  if (h[0] === 0x64 && h[1] === 0xff9b) {
+    const v4 = `${h[6] >> 8}.${h[6] & 0xff}.${h[7] >> 8}.${h[7] & 0xff}`;
+    return isPrivateIPv4(v4);
+  }
+
+  if ((h[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
+  if ((h[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
   return false;
 }
 
@@ -81,33 +127,42 @@ function isPrivateAddress(ip: string): boolean {
  * Handles decimal/octal/short-form encodings for free, because getaddrinfo has
  * already normalised them by the time we see an address.
  */
-type LookupCallback = (
-  err: NodeJS.ErrnoException | null,
-  addresses: dns.LookupAddress[],
-) => void;
-
+/**
+ * Node's LookupFunction contract is polymorphic: the CALLER decides whether it
+ * wants a single address or an array, via `options.all`, and that in turn
+ * depends on `autoSelectFamily`. Always forcing `all: true` internally and
+ * always answering with an array works only by accident of today's Node
+ * defaults — flip `autoSelectFamily` and Node throws ERR_INVALID_IP_ADDRESS,
+ * which surfaces as a generic "unreachable" and silently disables enrichment
+ * entirely. So: answer in the shape that was actually asked for.
+ */
 function guardedLookup(
   hostname: string,
-  options: dns.LookupAllOptions,
-  callback: LookupCallback,
+  options: dns.LookupOneOptions | dns.LookupAllOptions,
+  callback: (
+    err: NodeJS.ErrnoException | null,
+    address: string | dns.LookupAddress[],
+    family?: number,
+  ) => void,
 ): void {
+  const wantsAll = options?.all === true;
   dns.lookup(unbracket(hostname), { ...options, all: true }, (err, addresses) => {
-    if (err) return callback(err, []);
+    if (err) return callback(err, [], 0);
     if (addresses.length === 0) {
-      return callback(new Error("could not resolve host"), []);
+      return callback(new Error("could not resolve host"), [], 0);
     }
+    // Refuse if ANY resolved address is private — never "trust the first one".
     for (const { address } of addresses) {
       if (isPrivateAddress(address)) {
-        return callback(new Error("BLOCKED_PRIVATE_ADDRESS"), []);
+        return callback(new Error("BLOCKED_PRIVATE_ADDRESS"), [], 0);
       }
     }
-    callback(null, addresses);
+    if (wantsAll) return callback(null, addresses);
+    callback(null, addresses[0].address, addresses[0].family);
   });
 }
 
-const safeAgent = new Agent({
-  connect: { lookup: guardedLookup as never },
-});
+const safeAgent = new Agent({ connect: { lookup: guardedLookup } });
 
 /**
  * Layer two, and it is NOT redundant.

@@ -112,16 +112,21 @@ describe("capture is sacred — invariants", () => {
     );
   });
 
-  it("enrichAttempts is monotonic — it never decreases", async () => {
+  it("enrichAttempts increases by EXACTLY ONE per bump", async () => {
+    // Was "never decreases", which passed vacuously against a mutant where
+    // bumpAttempts did nothing at all — Voss proved it. The property that
+    // actually matters for the 5-attempt failed_extract cap is exact
+    // increment, so assert that instead.
     await fc.assert(
       fc.asyncProperty(fc.integer({ min: 1, max: 8 }), async (bumps) => {
         const c = await store.addCatch("https://example.com/");
         let last = c.enrichAttempts;
         for (let i = 0; i < bumps; i++) {
           const next = await store.updateCatch(c.id, { bumpAttempts: true });
-          expect(next!.enrichAttempts).toBeGreaterThanOrEqual(last);
+          expect(next!.enrichAttempts).toBe(last + 1);
           last = next!.enrichAttempts;
         }
+        expect(last).toBe(c.enrichAttempts + bumps);
       }),
       { numRuns: 30 },
     );

@@ -48,6 +48,23 @@ let dbPromise: Promise<IDBDatabase> | null = null;
 
 function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
+
+  // Open BEFORE constructing the memoised promise.
+  //
+  // Safari private mode throws synchronously here. If that throw were handled
+  // inside the Promise executor, its `dbPromise = null` would run DURING the
+  // executor — i.e. before `dbPromise = new Promise(...)` completes — and the
+  // pending assignment would immediately stomp the null. The memo would then
+  // hold a rejected promise forever, so "try again" would be a lie for the rest
+  // of the tab's life. The line looked identical to the two branches that work;
+  // the difference is that those fire from asynchronous callbacks.
+  let opened: IDBOpenDBRequest;
+  try {
+    opened = indexedDB.open(DB_NAME, DB_VERSION);
+  } catch (e) {
+    return Promise.reject(e); // never memoised — the next capture retries clean
+  }
+
   dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
     let settled = false;
     let lateHandle: IDBOpenDBRequest | null = null;
@@ -70,19 +87,7 @@ function openDb(): Promise<IDBDatabase> {
       fn();
     };
 
-    let req: IDBOpenDBRequest;
-    try {
-      req = indexedDB.open(DB_NAME, DB_VERSION);
-    } catch (e) {
-      // Safari private mode and some locked-down profiles throw synchronously.
-      // Clear the memo so the NEXT capture retries a fresh open — otherwise
-      // "try again" is a lie for the rest of the tab's life.
-      finish(() => {
-        dbPromise = null;
-        reject(e);
-      });
-      return;
-    }
+    const req = opened; // opened above, outside the memo — see the note there
     lateHandle = req;
     req.onupgradeneeded = () => {
       const db = req.result;
@@ -220,9 +225,15 @@ export async function updateCatch(
       if (statusFromAttempts) {
         next.status = attempts >= MAX_ENRICH_ATTEMPTS ? "failed_extract" : "raw";
       }
-      // Never downgrade a catch that is already cited.
-      if (existing.status === "sieved" && next.status !== "sieved") {
+      // Never downgrade a catch that is already cited — and that protection
+      // has to cover the METADATA too, not just the status field. A losing
+      // sweep's failure would otherwise merge its extractError in alongside
+      // the winning sweep's good title.
+      if (existing.status === "sieved") {
         next.status = "sieved";
+        next.sourceMeta = fields.sourceMeta?.title
+          ? next.sourceMeta // a newer successful extraction may still update it
+          : { ...existing.sourceMeta };
       }
 
       const put = store.put(next);

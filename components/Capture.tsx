@@ -52,6 +52,10 @@ export default function Capture() {
   // read the pre-clear value and mint a duplicate catch. A ref, not state —
   // it must be set synchronously within the same click handler.
   const submittingRef = useRef(false);
+  /** Mirrors `value` so an async failure path can read it without a stale closure. */
+  const valueRef = useRef("");
+  /** So the stamp timer can be cleared on unmount, like every other timer here. */
+  const stampTimerRef = useRef<number | undefined>(undefined);
   const online = useSyncExternalStore(subscribeOnline, getOnline, getOnlineServer);
 
   const refresh = useCallback(async () => {
@@ -65,6 +69,11 @@ export default function Capture() {
       setStorageDown(true);
     }
   }, []);
+
+  // Refs must be written outside render, not during it.
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
 
   // ---- enrichment sweep: runs on load, on reconnect, and on an interval ----
   const sweep = useCallback(async () => {
@@ -82,16 +91,37 @@ export default function Capture() {
       }
       for (const c of pending) {
         if (!c.sourceUrl) continue;
-        await updateCatch(c.id, { status: "sieving" });
-        await refresh();
+        // Every store write in this loop is individually guarded. The whole
+        // loop used to sit in a try/finally with no catch — the exact shape
+        // that caused the item-1 HALT — so a single failed write would abandon
+        // the rest of the batch and escape as an unhandled rejection.
         try {
-          const res = await fetch("/api/enrich", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ url: c.sourceUrl }),
-          });
-          const data = await res.json();
-          if (data.ok) {
+          await updateCatch(c.id, { status: "sieving" });
+          await refresh();
+
+          // Network failure and store failure are DIFFERENT domains and must
+          // not share a catch: a successful extraction whose write failed was
+          // being relabelled as a network failure, discarding the title it had
+          // just fetched.
+          let data: {
+            ok?: boolean;
+            title?: string;
+            siteName?: string;
+            description?: string;
+            error?: string;
+          } | null = null;
+          try {
+            const res = await fetch("/api/enrich", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ url: c.sourceUrl }),
+            });
+            data = await res.json();
+          } catch {
+            data = null; // hard network failure
+          }
+
+          if (data?.ok) {
             await updateCatch(c.id, {
               status: "sieved",
               sourceMeta: {
@@ -105,23 +135,24 @@ export default function Capture() {
               bumpAttempts: true,
             });
           } else {
-            // "couldn't extract, saved anyway" — never a lost catch
+            // "couldn't extract, saved anyway" — never a lost catch.
+            // statusFromAttempts matters: without it a failure caps out at 5
+            // attempts while the label still claims "retrying", promising work
+            // that has permanently stopped.
             await updateCatch(c.id, {
-              sourceMeta: { siteName: data.siteName, extractError: data.error },
+              sourceMeta: data
+                ? { siteName: data.siteName, extractError: data.error }
+                : { extractError: "couldn't reach the network" },
               bumpAttempts: true,
               statusFromAttempts: true,
             });
           }
+          await refresh();
         } catch {
-          // Network died mid-enrichment. statusFromAttempts matters: without it
-          // a hard fetch failure caps out at 5 attempts while the label still
-          // claims "retrying", promising work that has permanently stopped.
-          await updateCatch(c.id, {
-            bumpAttempts: true,
-            statusFromAttempts: true,
-          });
+          // The store failed for this catch. Skip it; the next sweep retries.
+          // The capture itself is already safe on disk — this is enrichment.
+          continue;
         }
-        await refresh();
       }
     } finally {
       sweepingRef.current = false;
@@ -140,6 +171,7 @@ export default function Capture() {
     return () => {
       window.removeEventListener("online", onReconnect);
       clearInterval(iv);
+      window.clearTimeout(stampTimerRef.current);
     };
   }, [refresh, sweep]);
 
@@ -167,7 +199,8 @@ export default function Capture() {
       await refresh();
 
       setStamp(true);
-      window.setTimeout(() => setStamp(false), 1400);
+      window.clearTimeout(stampTimerRef.current);
+      stampTimerRef.current = window.setTimeout(() => setStamp(false), 1400);
 
       // enrichment is fire-and-forget, deliberately unawaited
       void sweep();
@@ -176,21 +209,23 @@ export default function Capture() {
       // CLAUDE.md — capture is sacred. A failed save must be LOUD and must not
       // destroy the user's text. No auto-dismiss: this state persists until
       // they succeed.
-      setValue((current) => {
-        // If they have already started typing something else, do NOT clobber
-        // it — the failed text is shown in the error banner instead, so it is
-        // still recoverable by hand.
-        if (current.trim().length > 0) {
-          setSaveError(
-            `Couldn't save that one. Nothing was lost — here it is again: ${raw}`,
-          );
-          return current;
-        }
+      // Read the CURRENT value without a stale closure, but keep the updater
+      // pure — React may call it twice (StrictMode) or discard its result, so
+      // calling setSaveError inside it is an API misuse. The ref mirrors value
+      // on every render, so it is safe to read here.
+      const typedSince = valueRef.current.trim().length > 0;
+      if (typedSince) {
+        // They have already started something else. Do NOT clobber it — surface
+        // the failed text instead so it is still recoverable.
+        setSaveError(
+          `Couldn't save that one. Nothing was lost — here it is again: ${raw}`,
+        );
+      } else {
+        setValue(raw);
         setSaveError(
           "Couldn't save that one. Your words are still in the box — try again.",
         );
-        return raw;
-      });
+      }
     } finally {
       submittingRef.current = false;
       setSaving(false);
