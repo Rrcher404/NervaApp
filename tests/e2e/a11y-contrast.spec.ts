@@ -96,6 +96,37 @@ test("every rendered text node meets WCAG AA against the parchment ground", asyn
       }
     };
     walk(document.body);
+
+    // ::placeholder is a pseudo-element and NEVER a child text node, so the
+    // walk above cannot see it. Halvorsen caught this test reporting a clean
+    // pass while a real 3.40:1 failure sat on the page. A guard with a blind
+    // spot is worse than no guard.
+    for (const el of Array.from(
+      document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+        "input[placeholder], textarea[placeholder]",
+      ),
+    )) {
+      if (!el.placeholder?.trim()) continue;
+      const cs = getComputedStyle(el, "::placeholder");
+      let bgEl: Element | null = el;
+      let bg = "rgba(255, 255, 255, 1)";
+      while (bgEl) {
+        const c = toRGBA(getComputedStyle(bgEl).backgroundColor);
+        if (c && !/rgba\(0, 0, 0, 0(\.0+)?\)|transparent/.test(c)) {
+          bg = c;
+          break;
+        }
+        bgEl = bgEl.parentElement;
+      }
+      out.push({
+        text: `::placeholder "${el.placeholder.trim().slice(0, 20)}"`,
+        color: toRGBA(cs.color),
+        bg,
+        size: parseFloat(cs.fontSize || getComputedStyle(el).fontSize),
+        weight: cs.fontWeight || getComputedStyle(el).fontWeight,
+      });
+    }
+
     return out;
   });
 

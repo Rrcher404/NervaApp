@@ -13,8 +13,12 @@
  * failing is cosmetic, never fatal.
  */
 
-import dns from "node:dns/promises";
+import dns from "node:dns";
 import net from "node:net";
+// undici's OWN fetch, not the global. Node 22's global fetch is backed by an
+// internal copy of undici and rejects a dispatcher built from this package
+// ("invalid onRequestStart method"), which would silently disable the guard.
+import { Agent, fetch as undiciFetch, type Response as UndiciResponse } from "undici";
 
 export interface ExtractResult {
   ok: boolean;
@@ -64,21 +68,75 @@ function isPrivateAddress(ip: string): boolean {
 }
 
 /**
- * Resolve a hostname and refuse if ANY resolved address is private.
- * Also catches decimal/octal-encoded loopback (http://2130706433/), because
- * getaddrinfo normalises those before we ever see them.
+ * SSRF guard that closes DNS rebinding.
+ *
+ * A resolve-then-fetch check is defeatable: `fetch` re-resolves the hostname
+ * independently, so an attacker's nameserver can answer the safety check and
+ * the real connection differently — deterministically, since the check always
+ * queries first. The guard has to run at CONNECT time, on the address actually
+ * being dialled.
+ *
+ * This lookup hook is handed to undici's connector, so every address the socket
+ * would use is validated in the same operation that uses it. There is no window.
+ * Handles decimal/octal/short-form encodings for free, because getaddrinfo has
+ * already normalised them by the time we see an address.
+ */
+type LookupCallback = (
+  err: NodeJS.ErrnoException | null,
+  addresses: dns.LookupAddress[],
+) => void;
+
+function guardedLookup(
+  hostname: string,
+  options: dns.LookupAllOptions,
+  callback: LookupCallback,
+): void {
+  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+    if (err) return callback(err, []);
+    if (addresses.length === 0) {
+      return callback(new Error("could not resolve host"), []);
+    }
+    for (const { address } of addresses) {
+      if (isPrivateAddress(address)) {
+        return callback(new Error("BLOCKED_PRIVATE_ADDRESS"), []);
+      }
+    }
+    callback(null, addresses);
+  });
+}
+
+const safeAgent = new Agent({
+  connect: { lookup: guardedLookup as never },
+});
+
+/**
+ * Layer two, and it is NOT redundant.
+ *
+ * undici skips DNS resolution entirely when the host is already a literal
+ * address, so the connector guard above never fires for `http://127.0.0.1/`,
+ * `http://2130706433/` (decimal) or `http://0177.0.0.1/` (octal). Verified by
+ * probe: all three reached a local decoy server with the connector guard
+ * installed. Only a real hostname like `localhost` was caught.
+ *
+ * So every URL is also pre-checked here before the request is made. getaddrinfo
+ * normalises decimal/octal/short-form encodings, which is what makes this catch
+ * them all with one code path.
+ *
+ * Neither layer is sufficient alone: this one has a rebinding window, the
+ * connector one has a literal-IP hole. Together they close both.
  */
 async function assertPublicHost(hostname: string): Promise<string | null> {
-  try {
-    const addrs = await dns.lookup(hostname, { all: true });
-    if (addrs.length === 0) return "could not resolve host";
-    for (const { address } of addrs) {
-      if (isPrivateAddress(address)) return "refusing to fetch a private address";
-    }
-    return null;
-  } catch {
-    return "could not resolve host";
-  }
+  return new Promise((resolve) => {
+    dns.lookup(hostname, { all: true }, (err, addresses) => {
+      if (err || addresses.length === 0) return resolve("could not resolve host");
+      for (const { address } of addresses) {
+        if (isPrivateAddress(address)) {
+          return resolve("refusing to fetch a private address");
+        }
+      }
+      resolve(null);
+    });
+  });
 }
 
 function decodeEntities(s: string): string {
@@ -113,7 +171,7 @@ export async function extractLinkMeta(url: string): Promise<ExtractResult> {
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   try {
-    let res: Response | null = null;
+    let res: UndiciResponse | null = null;
 
     // Manual redirect following — every hop is re-validated. `redirect: follow`
     // would let an external-looking URL 302 us straight into the private range.
@@ -121,13 +179,16 @@ export async function extractLinkMeta(url: string): Promise<ExtractResult> {
       const blocked = await assertPublicHost(current.hostname);
       if (blocked) return { ok: false, error: blocked };
 
-      const r: Response = await fetch(current.toString(), {
+      const r: UndiciResponse = await undiciFetch(current.toString(), {
         signal: controller.signal,
         redirect: "manual",
         headers: {
           "user-agent": "Mozilla/5.0 (compatible; SieveBot/0.1; +https://nervahous.com)",
           accept: "text/html,application/xhtml+xml",
         },
+        // The guard lives in the connector, so it validates the address the
+        // socket actually dials. Every redirect hop goes through it too.
+        dispatcher: safeAgent,
       });
 
       if (r.status >= 300 && r.status < 400) {
@@ -190,7 +251,18 @@ export async function extractLinkMeta(url: string): Promise<ExtractResult> {
     if (!title) return { ok: false, siteName, error: "no title found" };
     return { ok: true, title, siteName, description };
   } catch (e) {
-    const msg = e instanceof Error && e.name === "AbortError" ? "timed out" : "unreachable";
+    const chain: string[] = [];
+    for (let err: unknown = e; err; err = (err as { cause?: unknown }).cause) {
+      if (err instanceof Error) chain.push(err.message, err.name);
+    }
+    const joined = chain.join(" ");
+    const msg = joined.includes("BLOCKED_PRIVATE_ADDRESS")
+      ? "refusing to fetch a private address"
+      : joined.includes("could not resolve host")
+        ? "could not resolve host"
+        : chain.includes("AbortError")
+          ? "timed out"
+          : "unreachable";
     return { ok: false, error: msg };
   } finally {
     clearTimeout(timer);

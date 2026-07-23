@@ -72,7 +72,14 @@ export default function Capture() {
     if (sweepingRef.current) return; // mutex — overlapping sweeps corrupt state
     sweepingRef.current = true;
     try {
-      const pending = await pendingEnrichment();
+      let pending: LocalCatch[];
+      try {
+        pending = await pendingEnrichment();
+      } catch {
+        // Store unreachable. refresh() already surfaces this to the user; the
+        // sweep must not throw an unhandled rejection every 15s forever.
+        return;
+      }
       for (const c of pending) {
         if (!c.sourceUrl) continue;
         await updateCatch(c.id, { status: "sieving" });
@@ -103,8 +110,13 @@ export default function Capture() {
             });
           }
         } catch {
-          // network died mid-enrichment. Back to 'raw'; the sweep retries later.
-          await updateCatch(c.id, { status: "raw", bumpAttempts: true });
+          // Network died mid-enrichment. statusFromAttempts matters: without it
+          // a hard fetch failure caps out at 5 attempts while the label still
+          // claims "retrying", promising work that has permanently stopped.
+          await updateCatch(c.id, {
+            bumpAttempts: true,
+            statusFromAttempts: true,
+          });
         }
         await refresh();
       }
@@ -192,7 +204,7 @@ export default function Capture() {
           rows={3}
           placeholder="…"
           aria-label="Capture"
-          className="w-full resize-none border-[3px] border-ink bg-ground p-4 font-serif text-lg text-ink shadow-hard outline-none placeholder:text-ink/50 focus:shadow-hard-lg"
+          className="w-full resize-none border-[3px] border-ink bg-ground p-4 font-serif text-lg text-ink shadow-hard outline-none placeholder:text-ink/70 focus:shadow-hard-lg"
         />
         <div className="mt-3 flex items-center justify-between gap-4">
           <button
@@ -218,7 +230,7 @@ export default function Capture() {
         <div
           data-testid="storage-down"
           role="alert"
-          className="mb-6 border-[3px] border-ink bg-ground p-4 shadow-hard"
+          className="mb-6 border-[3px] border-ink bg-ground p-4"
         >
           <p className="font-mono text-sm uppercase tracking-wide text-ink">
             This browser is blocking local storage — captures can&rsquo;t be saved
@@ -233,7 +245,7 @@ export default function Capture() {
         <div
           data-testid="save-error"
           role="alert"
-          className="mb-6 border-[3px] border-ink bg-ground p-4 shadow-hard"
+          className="mb-6 border-[3px] border-ink bg-ground p-4"
         >
           <p className="font-mono text-sm uppercase tracking-wide text-ink">
             {saveError}

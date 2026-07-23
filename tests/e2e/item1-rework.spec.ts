@@ -107,8 +107,17 @@ test.describe("HIGH: sweep race cannot revert a cited catch", () => {
   });
 });
 
-test.describe("MEDIUM: cross-tab duplicate capture", () => {
-  test("the same text submitted from two tabs at once persists once", async ({
+/**
+ * Voss filed cross-tab duplicates as MEDIUM in round 1. The fix — a 2s content
+ * dedupe — introduced an UNSKIPPABLE: it discarded deliberate repeats while
+ * clearing the box and stamping success. The finding is therefore DECLINED, not
+ * fixed, and this test now asserts the opposite of what it originally did.
+ *
+ * The severities are not symmetric. A duplicate catch is a cosmetic annoyance.
+ * A dropped catch is a constitutional violation. Two tabs are two gestures.
+ */
+test.describe("DECLINED: cross-tab 'duplicates' are two deliberate captures", () => {
+  test("the same text submitted from two tabs persists TWICE — nothing is discarded", async ({
     context,
   }) => {
     const a = await context.newPage();
@@ -130,8 +139,48 @@ test.describe("MEDIUM: cross-tab duplicate capture", () => {
     ]);
 
     await a.reload();
-    await expect(a.getByTestId("catch-item")).toHaveCount(1);
+    await expect(a.getByTestId("catch-item")).toHaveCount(2);
     await a.close();
     await b.close();
+  });
+
+  test("UNSKIPPABLE regression: a deliberate repeat is never swallowed", async ({
+    page,
+  }) => {
+    // The exact repro from the halt: type "wait", submit, pause, type it again.
+    await page.goto("/");
+    await page.evaluate(() => indexedDB.deleteDatabase("sieve"));
+    await page.reload();
+    await expect(page.getByTestId("capture-input")).toBeVisible();
+
+    await page.getByTestId("capture-input").fill("wait");
+    await page.getByTestId("capture-submit").click();
+    await expect(page.getByTestId("catch-item")).toHaveCount(1);
+
+    await page.waitForTimeout(1000);
+
+    await page.getByTestId("capture-input").fill("wait");
+    await page.getByTestId("capture-submit").click();
+    await expect(page.getByTestId("catch-item")).toHaveCount(2);
+
+    // and it is genuinely on disk, not just on screen
+    await page.reload();
+    await expect(page.getByTestId("catch-item")).toHaveCount(2);
+  });
+
+  test("a burst of five rapid captures all land, and the button never wedges", async ({
+    page,
+  }) => {
+    // Hyperfocus harvest is a flagship mechanic; the removed lock stalled it.
+    await page.goto("/");
+    await page.evaluate(() => indexedDB.deleteDatabase("sieve"));
+    await page.reload();
+    await expect(page.getByTestId("capture-input")).toBeVisible();
+
+    for (let i = 0; i < 5; i++) {
+      await page.getByTestId("capture-input").fill(`burst thought ${i}`);
+      await page.getByTestId("capture-submit").click({ timeout: 3000 });
+    }
+    await expect(page.getByTestId("catch-item")).toHaveCount(5);
   });
 });

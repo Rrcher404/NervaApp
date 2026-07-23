@@ -69,7 +69,12 @@ function openDb(): Promise<IDBDatabase> {
       req = indexedDB.open(DB_NAME, DB_VERSION);
     } catch (e) {
       // Safari private mode and some locked-down profiles throw synchronously.
-      finish(() => reject(e));
+      // Clear the memo so the NEXT capture retries a fresh open — otherwise
+      // "try again" is a lie for the rest of the tab's life.
+      finish(() => {
+        dbPromise = null;
+        reject(e);
+      });
       return;
     }
     req.onupgradeneeded = () => {
@@ -81,7 +86,11 @@ function openDb(): Promise<IDBDatabase> {
       }
     };
     req.onsuccess = () => finish(() => resolve(req.result));
-    req.onerror = () => finish(() => reject(req.error));
+    req.onerror = () =>
+      finish(() => {
+        dbPromise = null; // same reason: a retry must actually retry
+        reject(req.error);
+      });
     // Another tab holds an older version open — surface it, don't hang.
     req.onblocked = () =>
       finish(() => {
@@ -119,6 +128,25 @@ export function detectType(raw: string): { type: CatchType; sourceUrl?: string }
  * network: no fetch happens before this resolves. Everything downstream
  * (enrich, sync) is async and failure-tolerant.
  */
+/**
+ * THE SACRED WRITE.
+ *
+ * Deliberately has NO content-based deduplication.
+ *
+ * A previous version dropped a capture whose text matched another within a
+ * 2000ms window, to close a "same content from two tabs" finding. That was a
+ * heuristic answering an identity question, and it could not tell a deliberate
+ * repeat from a double-fire: typing "wait", submitting, pausing a second, and
+ * typing "wait" again lost the second thought. Short repeated fragments are the
+ * worst-day user's most likely input.
+ *
+ * The severities are not symmetric. A duplicate catch is a cosmetic annoyance
+ * the user can ignore. A dropped catch is a constitutional violation. Where the
+ * two are in tension, capture-is-sacred decides, and it decides toward keeping
+ * the data. Same-gesture double-fire is handled where it actually belongs —
+ * an in-flight guard on the submit handler. Two tabs are two gestures, and two
+ * gestures are two catches.
+ */
 export async function addCatch(rawContent: string): Promise<LocalCatch> {
   const trimmed = rawContent.trim().slice(0, MAX_CAPTURE_BYTES);
   const { type, sourceUrl } = detectType(trimmed);
@@ -133,26 +161,11 @@ export async function addCatch(rawContent: string): Promise<LocalCatch> {
     synced: false,
     enrichAttempts: 0,
   };
-
-  // Cross-tab dedupe: the component's in-flight ref is per-tab, but tabs of the
-  // same origin share this database. An ND user mid-hyperfocus has several open.
-  const write = async () => {
-    const recent = await tx<LocalCatch[]>("readonly", (s) => s.getAll());
-    const cutoff = Date.now() - 2000;
-    const dupe = recent.find(
-      (c) =>
-        c.rawContent === item.rawContent &&
-        new Date(c.capturedAt).getTime() >= cutoff,
-    );
-    if (dupe) return dupe;
-    await tx("readwrite", (s) => s.put(item));
-    return item;
-  };
-
-  if (typeof navigator !== "undefined" && "locks" in navigator) {
-    return navigator.locks.request("sieve-add-catch", write);
-  }
-  return write();
+  // One atomic put. IndexedDB transactions are already serialised, so no lock
+  // is needed — and the lock that was here had no timeout, which serialised a
+  // burst of captures behind a full-table scan and stalled hyperfocus harvest.
+  await tx("readwrite", (s) => s.put(item));
+  return item;
 }
 
 export interface UpdateOptions {
