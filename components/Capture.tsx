@@ -12,6 +12,7 @@ import {
   listCatches,
   pendingEnrichment,
   updateCatch,
+  MAX_ENRICH_ATTEMPTS,
   type LocalCatch,
 } from "@/lib/store";
 
@@ -41,6 +42,7 @@ export default function Capture() {
   const [stamp, setStamp] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [storageDown, setStorageDown] = useState(false);
+  const [saving, setSaving] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Sweeps fire from four independent triggers (mount, reconnect, interval,
   // post-submit). Without a mutex two can process the same catch and a slower
@@ -132,6 +134,7 @@ export default function Capture() {
     if (!raw || submittingRef.current) return;
     submittingRef.current = true;
     setSaveError(null);
+    setSaving(true);
 
     try {
       // THE SACRED WRITE — local, first, before anything touches the network.
@@ -159,6 +162,7 @@ export default function Capture() {
       );
     } finally {
       submittingRef.current = false;
+      setSaving(false);
     }
   }
 
@@ -170,8 +174,9 @@ export default function Capture() {
         <h1 className="font-serif text-3xl leading-tight text-ink">
           What are you trying to figure out?
         </h1>
-        <p className="mt-2 font-mono text-xs uppercase tracking-wide text-ink/60">
-          paste a link, or just start typing. no titles, no folders.
+        {/* UI copy speaks in the grotesque. Mono is reserved for the machine. */}
+        <p className="mt-2 font-sans text-sm text-ink/70">
+          Paste a link, or just start typing. No titles, no folders.
         </p>
       </header>
 
@@ -187,21 +192,22 @@ export default function Capture() {
           rows={3}
           placeholder="…"
           aria-label="Capture"
-          className="w-full resize-none border-[3px] border-ink bg-ground p-4 font-serif text-lg text-ink shadow-hard outline-none placeholder:text-ink/30 focus:shadow-hard-lg"
+          className="w-full resize-none border-[3px] border-ink bg-ground p-4 font-serif text-lg text-ink shadow-hard outline-none placeholder:text-ink/50 focus:shadow-hard-lg"
         />
         <div className="mt-3 flex items-center justify-between gap-4">
           <button
             type="submit"
             data-testid="capture-submit"
-            disabled={!value.trim()}
+            disabled={!value.trim() || saving}
+            aria-busy={saving}
             className="border-[3px] border-ink bg-accent px-6 py-2 font-mono text-sm font-bold uppercase tracking-wide text-ink shadow-hard transition-transform disabled:opacity-40 enabled:active:translate-x-[3px] enabled:active:translate-y-[3px] enabled:active:shadow-none"
           >
-            Catch it
+            {saving ? "Catching…" : "Catch it"}
           </button>
           <span
             data-testid="connection-state"
             data-online={online}
-            className="font-mono text-[11px] uppercase tracking-wider text-ink/50"
+            className="font-mono text-[11px] uppercase tracking-wider text-ink/70"
           >
             {online ? "online" : "offline — captures still land"}
           </span>
@@ -250,13 +256,13 @@ export default function Capture() {
           // §7.2 — never a blank page. Pre-seeded with instruction.
           <div
             data-testid="empty-state"
-            className="border-[3px] border-dashed border-ink/40 p-6"
+            className="border-[3px] border-dashed border-ink/60 p-6"
           >
-            <p className="font-serif text-lg text-ink/70">
+            <p className="font-serif text-lg text-ink/80">
               Nothing caught yet. That&rsquo;s the normal starting position.
             </p>
-            <p className="mt-2 font-mono text-xs uppercase tracking-wide text-ink/50">
-              try: paste the last interesting link you left open in a tab.
+            <p className="mt-2 font-sans text-sm text-ink/70">
+              Try: paste the last interesting link you left open in a tab.
             </p>
           </div>
         ) : (
@@ -267,7 +273,10 @@ export default function Capture() {
                 data-testid="catch-item"
                 data-status={c.status}
                 data-type={c.type}
-                className="border-[3px] border-ink bg-ground p-4 shadow-hard"
+                /* No hard shadow: §6 says a bordered+shadowed element is
+                   PRESSABLE. A catch card is a record, not a control — giving
+                   it the button costume teaches a false affordance. */
+                className="border-[3px] border-ink bg-ground p-4"
               >
                 {/* serif = the human's material */}
                 <p className="font-serif text-lg leading-snug text-ink break-words">
@@ -277,7 +286,7 @@ export default function Capture() {
                 </p>
 
                 {/* mono = the machine talking */}
-                <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] uppercase tracking-wider text-ink/55">
+                <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] uppercase tracking-wider text-ink/70">
                   <time dateTime={c.capturedAt}>
                     {new Date(c.capturedAt).toLocaleString()}
                   </time>
@@ -289,12 +298,19 @@ export default function Capture() {
                       <span data-testid="citation">
                         {c.status === "sieved" && c.sourceMeta.title ? (
                           <>cited — {c.sourceMeta.siteName}</>
-                        ) : c.status === "sieving" ? (
-                          <span data-testid="still-sieving">still sieving…</span>
                         ) : c.status === "failed_extract" ? (
                           <>couldn&rsquo;t extract — saved anyway</>
                         ) : (
-                          <span data-testid="still-sieving">still sieving…</span>
+                          // Honest about which state we are actually in. A
+                          // retrying catch must not look identical to a fresh
+                          // one for 75 seconds.
+                          <span data-testid="still-sieving">
+                            {c.status === "sieving"
+                              ? "still sieving…"
+                              : c.enrichAttempts > 0
+                                ? `couldn't reach it — retrying (${c.enrichAttempts}/${MAX_ENRICH_ATTEMPTS})`
+                                : "queued for sieving"}
+                          </span>
                         )}
                       </span>
                     </>
@@ -302,7 +318,7 @@ export default function Capture() {
                 </div>
 
                 {c.sourceUrl && (
-                  <p className="mt-1 font-mono text-[11px] text-ink/40 break-all">
+                  <p className="mt-1 font-mono text-[11px] text-ink/70 break-all">
                     {c.sourceUrl}
                   </p>
                 )}
