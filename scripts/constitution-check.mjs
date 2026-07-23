@@ -28,6 +28,16 @@ const BANNED = [
     pattern: /\b(update|delete)\s+(from\s+)?(public\.)?bricks\b/i,
   },
   {
+    // Voss, item-1 round 4: the SQL patterns above assume keyword-first
+    // ordering and miss the Supabase client's chained form, where the table
+    // name comes first and the verb after: supabase.from("bricks").delete().
+    // Confirmed live — a file whose entire job was to decrement bricks passed
+    // clean. This is the shape the app's actual DB client produces.
+    id: "brick-client-mutation",
+    law: "CLAUDE.md — Bricks are append-only (Supabase client form).",
+    pattern: /\bbricks?["'`]?\s*\)[^\n]{0,40}\.(delete|update)\s*\(/i,
+  },
+  {
     id: "batch-reclustering",
     law: "CLAUDE.md — Threads never shuffle. No batch re-clustering, ever.",
     pattern: /\b(hdbscan|kmeans|k-means|recluster|re-cluster|reassignAllThreads)\b/i,

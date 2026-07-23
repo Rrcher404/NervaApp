@@ -271,3 +271,69 @@ Adopted or scheduled, in order of value:
 8. **Vercel MCP + `vercel:deployments-cicd`** — for the production deploy and preview URLs.
 9. **`product-tracking-skills`** — for the append-only `events` table in §12, when the
    metrics that have decision authority get instrumented.
+
+---
+
+## Item 1 — Scaffold + capture · 2026-07-23 · **PROCEED** (after re-authorisation)
+
+The run HALTED once (above). Jene re-authorised a third rework cycle and a harder adversarial
+pass. Three more review rounds followed. Final gate:
+
+| Dim | What | Grader | Score |
+|---|---|---|---|
+| 1 | Acceptance criterion in real browser | Kowalczyk | **9**/10 |
+| 2 | Worst-day UX | Kowalczyk + Halvorsen | **9**/10 |
+| 3 | Robustness | Voss | **8**/10 |
+| 4 | Interface hospitality | Halvorsen | **10**/10 |
+| 5 | Constitution + banned list | Marchetti | **10**/10 CLEAR |
+| | | **Composite** | **9.2** |
+
+**Zero UNSKIPPABLE. Constitution CLEAR. Gate: PROCEED.**
+
+### What the extra rounds bought
+
+Cycle 3 fixed the HALT's UNSKIPPABLE **by removal** — the content dedupe was a heuristic
+answering an identity question and could not tell a deliberate repeat from a double-fire.
+Deleted; Voss's original cross-tab finding formally DECLINED (a duplicate catch is cosmetic,
+a dropped catch is constitutional), and he accepted the reversal.
+
+The harder pass then found, and closed, three bugs that had survived the earlier rounds:
+- **A live SSRF bypass.** `http://[::ffff:127.0.0.1]/` reached an internal decoy through both
+  guard layers — the URL parser canonicalises it before any regex sees it. Replaced text
+  matching with numeric hextet parsing across the whole `::ffff:0:0/96` range, NAT64, ULA and
+  link-local. Voss's ~25-case torture battery could not break the replacement.
+- **The openDb fix was being clobbered by assignment ordering** — `dbPromise = null` inside a
+  Promise executor runs before the outer assignment completes. `indexedDB.open()` now happens
+  before the memo exists. Verified: the retry count now climbs 2→3→4.
+- **`sweep()` had reacquired the try/finally-with-no-catch shape that caused the HALT.**
+
+### New this item, carried forward
+
+- **Nakamura (code reviewer)** and **Adeyemi (reliability)** seats added — the two roles whose
+  absence let the HALT's bug through. Nakamura found the `as never` cast hiding a crash that
+  would have silently disabled the SSRF guard.
+- **Property-based test suite** (fast-check) asserting `persisted == submitted` for any capture
+  sequence. Mutation-tested: reintroduce the dedupe bug → suite fails.
+- **`scripts/constitution-check.mjs`** + pre-commit hook + CI — the banned list as a machine
+  gate. Voss found and I closed its one real hole (it missed the Supabase client's chained
+  `.from("bricks").delete()` form; SQL-keyword-first only). Now covers both.
+
+### Punch list (scored 8.0–8.9 territory, revisit — NOT blocking)
+
+- No service worker / offline app shell → a cold launch while already offline hits the browser
+  error page. **v0.5 scope** (MASTER-PLAN §14), costs a point on dim 2, tracked not fixed.
+- `unsyncedCatches()` and `lib/supabase/*` are scaffolding with no caller yet — wire or remove
+  when sync lands.
+- Error-banner recovered text is not one-tap restorable to the box (Halvorsen) — add a "restore"
+  affordance.
+- The contrast guard has no live opacity counterexample left in the app (the only one was
+  removed) — keep a synthetic case so the compositing code stays proven.
+
+### The thing nobody said
+
+Across four rounds and three rework cycles, **every single serious bug in this item was
+introduced by a fix, not by the original build** — the missing catch, the dedupe data-loss,
+the clobbered retry, the reacquired try/finally. The original capture code was close to right
+the first time; the danger was always in the repair. That is the empirical case for Adeyemi's
+seat and for the rule now written into it: *review the fix harder than the feature.* The next
+five items will be judged the same way, and the rework diffs harder than the feature diffs.
