@@ -39,7 +39,13 @@ export default function Capture() {
   const [value, setValue] = useState("");
   const [catches, setCatches] = useState<LocalCatch[]>([]);
   const [stamp, setStamp] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [storageDown, setStorageDown] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Sweeps fire from four independent triggers (mount, reconnect, interval,
+  // post-submit). Without a mutex two can process the same catch and a slower
+  // failing sweep can revert a successfully-cited one back to raw.
+  const sweepingRef = useRef(false);
   // In-flight guard: addCatch is async, so a fast second click would otherwise
   // read the pre-clear value and mint a duplicate catch. A ref, not state —
   // it must be set synchronously within the same click handler.
@@ -47,51 +53,61 @@ export default function Capture() {
   const online = useSyncExternalStore(subscribeOnline, getOnline, getOnlineServer);
 
   const refresh = useCallback(async () => {
-    setCatches(await listCatches());
+    try {
+      setCatches(await listCatches());
+      setStorageDown(false);
+    } catch {
+      // The store is unreachable (private mode, blocked upgrade, wedged DB).
+      // Say so plainly instead of throwing into the void — but keep the
+      // capture box usable, because a user mid-thought needs somewhere to put it.
+      setStorageDown(true);
+    }
   }, []);
 
   // ---- enrichment sweep: runs on load, on reconnect, and on an interval ----
   const sweep = useCallback(async () => {
     if (typeof navigator !== "undefined" && !navigator.onLine) return;
-    const pending = await pendingEnrichment();
-    for (const c of pending) {
-      if (!c.sourceUrl) continue;
-      await updateCatch(c.id, { status: "sieving" });
-      await refresh();
-      try {
-        const res = await fetch("/api/enrich", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ url: c.sourceUrl }),
-        });
-        const data = await res.json();
-        if (data.ok) {
-          await updateCatch(c.id, {
-            status: "sieved",
-            sourceMeta: {
-              title: data.title,
-              siteName: data.siteName,
-              description: data.description,
-            },
-            enrichAttempts: c.enrichAttempts + 1,
+    if (sweepingRef.current) return; // mutex — overlapping sweeps corrupt state
+    sweepingRef.current = true;
+    try {
+      const pending = await pendingEnrichment();
+      for (const c of pending) {
+        if (!c.sourceUrl) continue;
+        await updateCatch(c.id, { status: "sieving" });
+        await refresh();
+        try {
+          const res = await fetch("/api/enrich", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ url: c.sourceUrl }),
           });
-        } else {
-          const attempts = c.enrichAttempts + 1;
-          // "couldn't extract, saved anyway" — never a lost catch
-          await updateCatch(c.id, {
-            status: attempts >= 5 ? "failed_extract" : "raw",
-            sourceMeta: { ...c.sourceMeta, siteName: data.siteName, extractError: data.error },
-            enrichAttempts: attempts,
-          });
+          const data = await res.json();
+          if (data.ok) {
+            await updateCatch(c.id, {
+              status: "sieved",
+              sourceMeta: {
+                title: data.title,
+                siteName: data.siteName,
+                description: data.description,
+              },
+              bumpAttempts: true,
+            });
+          } else {
+            // "couldn't extract, saved anyway" — never a lost catch
+            await updateCatch(c.id, {
+              sourceMeta: { siteName: data.siteName, extractError: data.error },
+              bumpAttempts: true,
+              statusFromAttempts: true,
+            });
+          }
+        } catch {
+          // network died mid-enrichment. Back to 'raw'; the sweep retries later.
+          await updateCatch(c.id, { status: "raw", bumpAttempts: true });
         }
-      } catch {
-        // network died mid-enrichment. Back to 'raw'; the sweep retries later.
-        await updateCatch(c.id, {
-          status: "raw",
-          enrichAttempts: c.enrichAttempts + 1,
-        });
+        await refresh();
       }
-      await refresh();
+    } finally {
+      sweepingRef.current = false;
     }
   }, [refresh]);
 
@@ -115,10 +131,15 @@ export default function Capture() {
     const raw = value.trim();
     if (!raw || submittingRef.current) return;
     submittingRef.current = true;
+    setSaveError(null);
 
     try {
       // THE SACRED WRITE — local, first, before anything touches the network.
       await addCatch(raw);
+
+      // Only clear the input once the write has actually landed. If we cleared
+      // first and the write failed, the user's words would be gone from both
+      // the box and the disk.
       setValue("");
       inputRef.current?.focus();
       await refresh();
@@ -128,6 +149,14 @@ export default function Capture() {
 
       // enrichment is fire-and-forget, deliberately unawaited
       void sweep();
+    } catch {
+      // Storage rejected: quota exceeded, Safari private mode, blocked upgrade.
+      // CLAUDE.md — capture is sacred. A failed save must be LOUD and must not
+      // destroy the user's text. No auto-dismiss: this state persists until
+      // they succeed.
+      setSaveError(
+        "Couldn't save that one. Your words are still in the box — try again.",
+      );
     } finally {
       submittingRef.current = false;
     }
@@ -178,6 +207,33 @@ export default function Capture() {
           </span>
         </div>
       </form>
+
+      {storageDown && !saveError && (
+        <div
+          data-testid="storage-down"
+          role="alert"
+          className="mb-6 border-[3px] border-ink bg-ground p-4 shadow-hard"
+        >
+          <p className="font-mono text-sm uppercase tracking-wide text-ink">
+            This browser is blocking local storage — captures can&rsquo;t be saved
+            here. Private browsing is the usual cause.
+          </p>
+        </div>
+      )}
+
+      {saveError && (
+        // Loud, persistent, and NOT a punishment state — it names a machine
+        // failure, never a user failure, and the user's words are still in the box.
+        <div
+          data-testid="save-error"
+          role="alert"
+          className="mb-6 border-[3px] border-ink bg-ground p-4 shadow-hard"
+        >
+          <p className="font-mono text-sm uppercase tracking-wide text-ink">
+            {saveError}
+          </p>
+        </div>
+      )}
 
       {stamp && (
         <div

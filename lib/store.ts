@@ -38,13 +38,40 @@ export interface LocalCatch {
 const DB_NAME = "sieve";
 const DB_VERSION = 1;
 const CATCHES = "catches";
+export const MAX_ENRICH_ATTEMPTS = 5;
+/** A capture must never hang forever on a blocked or wedged database. */
+const OPEN_TIMEOUT_MS = 4000;
+/** Soft ceiling on a single capture. Generous — "pour everything in". */
+export const MAX_CAPTURE_BYTES = 2_000_000;
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
 function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+  dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      dbPromise = null; // let the next capture retry a fresh open
+      reject(new Error("indexeddb open timed out"));
+    }, OPEN_TIMEOUT_MS);
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+
+    let req: IDBOpenDBRequest;
+    try {
+      req = indexedDB.open(DB_NAME, DB_VERSION);
+    } catch (e) {
+      // Safari private mode and some locked-down profiles throw synchronously.
+      finish(() => reject(e));
+      return;
+    }
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(CATCHES)) {
@@ -53,8 +80,14 @@ function openDb(): Promise<IDBDatabase> {
         store.createIndex("status", "status");
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => finish(() => resolve(req.result));
+    req.onerror = () => finish(() => reject(req.error));
+    // Another tab holds an older version open — surface it, don't hang.
+    req.onblocked = () =>
+      finish(() => {
+        dbPromise = null;
+        reject(new Error("indexeddb blocked by another tab"));
+      });
   });
   return dbPromise;
 }
@@ -87,11 +120,12 @@ export function detectType(raw: string): { type: CatchType; sourceUrl?: string }
  * (enrich, sync) is async and failure-tolerant.
  */
 export async function addCatch(rawContent: string): Promise<LocalCatch> {
-  const { type, sourceUrl } = detectType(rawContent);
+  const trimmed = rawContent.trim().slice(0, MAX_CAPTURE_BYTES);
+  const { type, sourceUrl } = detectType(trimmed);
   const item: LocalCatch = {
     id: crypto.randomUUID(),
     type,
-    rawContent: rawContent.trim(),
+    rawContent: trimmed,
     sourceUrl,
     sourceMeta: {},
     status: "raw",
@@ -99,19 +133,83 @@ export async function addCatch(rawContent: string): Promise<LocalCatch> {
     synced: false,
     enrichAttempts: 0,
   };
-  await tx("readwrite", (s) => s.put(item));
-  return item;
+
+  // Cross-tab dedupe: the component's in-flight ref is per-tab, but tabs of the
+  // same origin share this database. An ND user mid-hyperfocus has several open.
+  const write = async () => {
+    const recent = await tx<LocalCatch[]>("readonly", (s) => s.getAll());
+    const cutoff = Date.now() - 2000;
+    const dupe = recent.find(
+      (c) =>
+        c.rawContent === item.rawContent &&
+        new Date(c.capturedAt).getTime() >= cutoff,
+    );
+    if (dupe) return dupe;
+    await tx("readwrite", (s) => s.put(item));
+    return item;
+  };
+
+  if (typeof navigator !== "undefined" && "locks" in navigator) {
+    return navigator.locks.request("sieve-add-catch", write);
+  }
+  return write();
 }
 
+export interface UpdateOptions {
+  /** Increment enrichAttempts from the value ON DISK, not a stale snapshot. */
+  bumpAttempts?: boolean;
+  /** Derive status from the freshly-bumped attempt count. */
+  statusFromAttempts?: boolean;
+}
+
+/**
+ * Read-modify-write inside a SINGLE IndexedDB transaction.
+ *
+ * The previous version read in one transaction and wrote in another, so a
+ * slower sweep could overwrite a faster one's result with a stale snapshot —
+ * reverting a successfully-cited catch back to 'raw' and discarding its title.
+ * Attempt counting is done from disk for the same reason.
+ */
 export async function updateCatch(
   id: string,
-  patch: Partial<LocalCatch>,
+  patch: Partial<LocalCatch> & UpdateOptions,
 ): Promise<LocalCatch | undefined> {
-  const existing = await tx<LocalCatch | undefined>("readonly", (s) => s.get(id));
-  if (!existing) return undefined;
-  const next = { ...existing, ...patch, id };
-  await tx("readwrite", (s) => s.put(next));
-  return next;
+  const { bumpAttempts, statusFromAttempts, ...fields } = patch;
+  const db = await openDb();
+  return new Promise<LocalCatch | undefined>((resolve, reject) => {
+    const t = db.transaction(CATCHES, "readwrite");
+    const store = t.objectStore(CATCHES);
+    const get = store.get(id);
+    get.onerror = () => reject(get.error);
+    get.onsuccess = () => {
+      const existing = get.result as LocalCatch | undefined;
+      if (!existing) return resolve(undefined);
+
+      const attempts = existing.enrichAttempts + (bumpAttempts ? 1 : 0);
+      const next: LocalCatch = {
+        ...existing,
+        ...fields,
+        // merge sourceMeta rather than replacing — a failed retry must not
+        // erase a title an earlier success already wrote
+        sourceMeta: fields.sourceMeta
+          ? { ...existing.sourceMeta, ...fields.sourceMeta }
+          : existing.sourceMeta,
+        enrichAttempts: attempts,
+        id,
+      };
+      if (statusFromAttempts) {
+        next.status = attempts >= MAX_ENRICH_ATTEMPTS ? "failed_extract" : "raw";
+      }
+      // Never downgrade a catch that is already cited.
+      if (existing.status === "sieved" && next.status !== "sieved") {
+        next.status = "sieved";
+      }
+
+      const put = store.put(next);
+      put.onsuccess = () => resolve(next);
+      put.onerror = () => reject(put.error);
+    };
+  });
 }
 
 export async function listCatches(): Promise<LocalCatch[]> {
@@ -127,7 +225,7 @@ export async function pendingEnrichment(): Promise<LocalCatch[]> {
     (c) =>
       c.type === "link" &&
       (c.status === "raw" || c.status === "sieving") &&
-      c.enrichAttempts < 5,
+      c.enrichAttempts < MAX_ENRICH_ATTEMPTS,
   );
 }
 
