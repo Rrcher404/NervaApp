@@ -337,3 +337,23 @@ the clobbered retry, the reacquired try/finally. The original capture code was c
 the first time; the danger was always in the repair. That is the empirical case for Adeyemi's
 seat and for the rule now written into it: *review the fix harder than the feature.* The next
 five items will be judged the same way, and the rework diffs harder than the feature diffs.
+
+---
+
+## Item 1 — LIVE on production · 2026-07-23
+
+Deployed to Vercel. Public production URL: **https://the-sieve.vercel.app**
+(project `the-sieve`, org solhous; the deployment-specific URL is Vercel-auth-walled by
+default, the canonical production alias is public.)
+
+**B3 live verification, on the real URL, not localhost:**
+- Cold open renders the parchment/ink/acid surface; disabled "CATCH IT" button correctly
+  shows without the accent (the contrast fix is live).
+- Pasted `https://en.wikipedia.org/wiki/Zettelkasten` → the SSRF-guarded serverless
+  `/api/enrich` ran on Vercel's Node runtime (undici dispatcher works there) and returned
+  **"Zettelkasten - Wikipedia · CITED — EN.WIKIPEDIA.ORG"**. Acceptance criterion passes in
+  production.
+- Env vars set on Vercel: Supabase URL + anon key, plus Gemini + OpenAI keys staged for item 2.
+
+A stranger could reach this URL now and log their first catch. The §2 gate (ten wallets) and
+the §13 witness still stand outside the run — but the FIRST CATCH LOGGED moment now has a URL.
