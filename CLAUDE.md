@@ -41,10 +41,10 @@ The five stages: **Catch** (human, seconds) → **Sieve** (machine, automatic) �
 | Styling | Tailwind 4 | no component library, no animation library |
 | DB / Auth | Supabase — Postgres + pgvector + Auth **magic links** + pg_cron + Storage | RLS from day one |
 | AI SDK | Vercel AI SDK v7 (`ai`) | one vendor, one SDK, one bill |
-| Bulk model | Gemini 2.5 Flash-Lite | question-gen, thread naming, claim extraction |
-| Synthesis model | Gemini 2.5 Flash | re-entry synthesis only |
-| Transcription | Groq `whisper-large-v3-turbo` | OpenAI Whisper fallback |
-| Embeddings | `text-embedding-3-small` (1536) | **version the model in the schema** |
+| Bulk model | `gemini-flash-lite-latest` | question-gen, thread naming, claim extraction. **Plan said 2.5-flash-lite — deprecated as of build (Jul 2026, Gemini 3.x current); the `-latest` alias can't go stale.** |
+| Synthesis model | `gemini-flash-latest` | re-entry synthesis only |
+| Transcription | **Gemini (native audio)** primary; Groq `whisper-large-v3-turbo` + OpenAI Whisper as fallbacks | Deviation from §9's Groq-primary, and *more* on-plan: consolidating on Gemini honours "one vendor, one SDK, one bill". Groq/OpenAI light up automatically if their keys appear. |
+| Embeddings | `text-embedding-3-small` (1536) | **version the model in the schema.** OpenAI key currently out of quota — item 3 needs a funded embeddings key or a Gemini-embeddings swap. |
 | Scheduling | `ts-fsrs` | queue cap, silent drop, requeue-on-miss |
 | Extraction | Mozilla Readability + `open-graph-scraper` self-hosted | Jina Reader fallback. Firecrawl only if paywall pain is *proven* |
 | Cron | **Supabase pg_cron** | NOT Vercel cron (Hobby = once daily, hour precision, non-commercial terms) |

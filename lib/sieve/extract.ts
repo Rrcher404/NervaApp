@@ -1,13 +1,16 @@
 /**
- * Link metadata extraction — item-1 scope: title / site / description for the
- * citation line. Full Readability + open-graph-scraper arrives in item 2.
+ * Link extraction — title / site / description for the citation line, plus
+ * article text (Mozilla Readability) for the claim + embedding pipeline.
  *
- * Server-side only. Three hard rules, all learned from the red team:
+ * Server-side only. Four hard rules, all learned from the red team:
  *   1. Time-boxed. A hanging fetch is worse than a failed one.
- *   2. Byte-capped. We read the <head>, not the internet.
- *   3. SSRF-guarded. Every hop's resolved IP is checked against private
- *      ranges BEFORE we connect, and redirects are followed manually so a
- *      302 to 169.254.169.254 cannot smuggle us into a metadata endpoint.
+ *   2. Byte-capped. We read enough for the article, not the internet.
+ *   3. SSRF-guarded, two layers. Every hop's resolved IP is checked against
+ *      private ranges BEFORE we connect (connector lookup + per-hop pre-check,
+ *      neither sufficient alone), and redirects are followed manually so a 302
+ *      to 169.254.169.254 cannot smuggle us into a metadata endpoint.
+ *   4. Jina Reader fallback when our own extraction yields nothing — a paywall
+ *      or JS-only page the raw HTML can't give us.
  *
  * Failure returns a structured error — the catch is already saved; enrichment
  * failing is cosmetic, never fatal.
@@ -19,18 +22,25 @@ import net from "node:net";
 // internal copy of undici and rejects a dispatcher built from this package
 // ("invalid onRequestStart method"), which would silently disable the guard.
 import { Agent, fetch as undiciFetch, type Response as UndiciResponse } from "undici";
+import { Readability } from "@mozilla/readability";
+import { parseHTML } from "linkedom";
 
 export interface ExtractResult {
   ok: boolean;
   title?: string;
   siteName?: string;
   description?: string;
+  author?: string;
+  publishedAt?: string;
+  /** Readability's cleaned article text, capped — feeds claims + embeddings. */
+  articleText?: string;
   error?: string;
 }
 
 const FETCH_TIMEOUT_MS = 6000;
-const MAX_BYTES = 512 * 1024;
+const MAX_BYTES = 1_500_000; // enough for the article body, not the whole site
 const MAX_REDIRECTS = 5;
+const MAX_ARTICLE_CHARS = 20_000; // cap what we keep from Readability
 
 /** RFC1918 + loopback + link-local + CGNAT + benchmarking + reserved. */
 function isPrivateIPv4(ip: string): boolean {
@@ -232,6 +242,55 @@ function metaContent(html: string, patterns: RegExp[]): string | undefined {
   return undefined;
 }
 
+/**
+ * Jina Reader fallback (r.jina.ai). Jina fetches the URL server-side and
+ * returns clean text, so it rescues JS-only and awkwardly-marked-up pages our
+ * raw HTML read can't. The URL goes to a third party — acceptable for a link
+ * the user deliberately captured. r.jina.ai is a fixed public host, so this
+ * uses the plain fetch, not the SSRF dispatcher (which guards user-controlled
+ * hosts, not this one).
+ */
+async function jinaFallback(url: string): Promise<ExtractResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(`https://r.jina.ai/${url}`, {
+      signal: controller.signal,
+      headers: { accept: "text/plain", "x-return-format": "text" },
+    });
+    if (!res.ok) return { ok: false, error: `jina: ${res.status}` };
+    const text = (await res.text()).trim();
+    if (!text) return { ok: false, error: "jina: empty" };
+    // Jina prefixes "Title: ...\nURL Source: ...\nMarkdown Content:\n<body>".
+    const titleLine = text.match(/^Title:\s*(.+)$/m)?.[1]?.trim();
+    const body = text
+      .replace(/^Title:.*$/m, "")
+      .replace(/^URL Source:.*$/m, "")
+      .replace(/^Markdown Content:\s*/m, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const host = (() => {
+      try {
+        return new URL(url).hostname.replace(/^www\./, "");
+      } catch {
+        return undefined;
+      }
+    })();
+    if (!titleLine && body.length < 200) return { ok: false, error: "jina: nothing usable" };
+    return {
+      ok: true,
+      title: titleLine ?? host ?? "Untitled",
+      siteName: host,
+      articleText: body ? body.slice(0, MAX_ARTICLE_CHARS) : undefined,
+    };
+  } catch (e) {
+    const msg = e instanceof Error && e.name === "AbortError" ? "jina: timed out" : "jina: unreachable";
+    return { ok: false, error: msg };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function extractLinkMeta(url: string): Promise<ExtractResult> {
   let current: URL;
   try {
@@ -293,12 +352,13 @@ export async function extractLinkMeta(url: string): Promise<ExtractResult> {
     if (reader) {
       const decoder = new TextDecoder();
       let received = 0;
+      // Read the whole document (up to the cap), not just <head> — Readability
+      // needs the body. The byte cap keeps a hostile giant page bounded.
       while (received < MAX_BYTES) {
         const { done, value } = await reader.read();
         if (done) break;
         received += value.byteLength;
         html += decoder.decode(value, { stream: true });
-        if (html.includes("</head>")) break;
       }
       html += decoder.decode(); // flush any trailing partial multi-byte char
       reader.cancel().catch(() => {});
@@ -322,8 +382,37 @@ export async function extractLinkMeta(url: string): Promise<ExtractResult> {
       /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']/i,
     ]);
 
-    if (!title) return { ok: false, siteName, error: "no title found" };
-    return { ok: true, title, siteName, description };
+    const author = metaContent(html, [
+      /<meta[^>]+name=["']author["'][^>]+content=["']([^"']+)["']/i,
+      /<meta[^>]+property=["']article:author["'][^>]+content=["']([^"']+)["']/i,
+    ]);
+    const publishedAt = metaContent(html, [
+      /<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["']/i,
+      /<time[^>]+datetime=["']([^"']+)["']/i,
+    ]);
+
+    // Readability for the article body. It can throw on malformed DOM — that
+    // must never fail the whole extraction, since the citation is already in
+    // hand. Best-effort, capped.
+    let articleText: string | undefined;
+    try {
+      const { document } = parseHTML(html);
+      const parsed = new Readability(document as unknown as Document).parse();
+      const text = parsed?.textContent?.replace(/\s+/g, " ").trim();
+      if (text && text.length > 200) articleText = text.slice(0, MAX_ARTICLE_CHARS);
+    } catch {
+      articleText = undefined; // body extraction is a bonus, never load-bearing
+    }
+
+    if (!title) {
+      // Our own read gave nothing usable — try Jina Reader as a fallback for
+      // JS-only or awkward pages. This sends the URL to a third party, which is
+      // acceptable for a link the user chose to capture.
+      const viaJina = await jinaFallback(current.toString());
+      if (viaJina.ok) return viaJina;
+      return { ok: false, siteName, error: "no title found" };
+    }
+    return { ok: true, title, siteName, description, author, publishedAt, articleText };
   } catch (e) {
     const chain: string[] = [];
     for (let err: unknown = e; err; err = (err as { cause?: unknown }).cause) {

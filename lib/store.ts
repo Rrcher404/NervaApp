@@ -33,6 +33,17 @@ export interface LocalCatch {
   capturedAt: string; // ISO — the moment of capture, even offline
   synced: boolean; // pushed to Supabase yet?
   enrichAttempts: number;
+  /**
+   * Voice catches only: the raw recording as an ArrayBuffer, NOT a Blob.
+   * WebKit (iOS Safari) fails to store Blobs in IndexedDB ("put failed"),
+   * which would break voice capture on the primary mobile target. ArrayBuffers
+   * structured-clone reliably everywhere; the Blob is reconstructed only at
+   * upload time.
+   */
+  audioData?: ArrayBuffer;
+  audioType?: string;
+  /** Voice catches only: recording length, for the provenance line. */
+  durationMs?: number;
 }
 
 const DB_NAME = "sieve";
@@ -178,6 +189,56 @@ export async function addCatch(rawContent: string): Promise<LocalCatch> {
   // burst of captures behind a full-table scan and stalled hyperfocus harvest.
   await tx("readwrite", (s) => s.put(item));
   return item;
+}
+
+/**
+ * The sacred write for VOICE. The recording persists to disk before any
+ * transcription is attempted — CLAUDE.md: capture must succeed with every
+ * external API down, and Whisper is an external API. A voice memo captured
+ * offline sits safely on disk until the network returns, exactly like a link.
+ *
+ * IndexedDB stores Blobs natively, so the audio itself is durable — a failed
+ * transcription never costs the user their recording, only its text.
+ */
+export async function addVoiceCatch(
+  audioBlob: Blob,
+  durationMs: number,
+): Promise<LocalCatch> {
+  // Read to an ArrayBuffer BEFORE the write — Blobs don't persist on WebKit.
+  const audioData = await audioBlob.arrayBuffer();
+  const item: LocalCatch = {
+    id: crypto.randomUUID(),
+    type: "voice",
+    rawContent: "", // filled by the transcript; the audio IS the raw material
+    sourceMeta: {},
+    status: "raw",
+    capturedAt: new Date().toISOString(),
+    synced: false,
+    enrichAttempts: 0,
+    audioData,
+    audioType: audioBlob.type || "audio/webm",
+    durationMs,
+  };
+  await tx("readwrite", (s) => s.put(item));
+  return item;
+}
+
+/** Reconstruct the recording Blob from stored bytes, for upload. */
+export function catchAudioBlob(c: LocalCatch): Blob | null {
+  if (!c.audioData) return null;
+  return new Blob([c.audioData], { type: c.audioType || "audio/webm" });
+}
+
+/** Voice catches still awaiting a transcript. */
+export async function pendingTranscription(): Promise<LocalCatch[]> {
+  const all = await listCatches();
+  return all.filter(
+    (c) =>
+      c.type === "voice" &&
+      !!c.audioData &&
+      (c.status === "raw" || c.status === "sieving") &&
+      c.enrichAttempts < MAX_ENRICH_ATTEMPTS,
+  );
 }
 
 export interface UpdateOptions {

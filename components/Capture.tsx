@@ -7,14 +7,9 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import {
-  addCatch,
-  listCatches,
-  pendingEnrichment,
-  updateCatch,
-  MAX_ENRICH_ATTEMPTS,
-  type LocalCatch,
-} from "@/lib/store";
+import { addCatch, listCatches, MAX_ENRICH_ATTEMPTS, type LocalCatch } from "@/lib/store";
+import { useSweep } from "@/lib/sieve/useSweep";
+import VoiceRecorder from "@/components/VoiceRecorder";
 
 /** Connection state as an external store — no setState-in-effect. */
 function subscribeOnline(cb: () => void) {
@@ -44,10 +39,6 @@ export default function Capture() {
   const [storageDown, setStorageDown] = useState(false);
   const [saving, setSaving] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // Sweeps fire from four independent triggers (mount, reconnect, interval,
-  // post-submit). Without a mutex two can process the same catch and a slower
-  // failing sweep can revert a successfully-cited one back to raw.
-  const sweepingRef = useRef(false);
   // In-flight guard: addCatch is async, so a fast second click would otherwise
   // read the pre-clear value and mint a duplicate catch. A ref, not state —
   // it must be set synchronously within the same click handler.
@@ -75,89 +66,19 @@ export default function Capture() {
     valueRef.current = value;
   }, [value]);
 
-  // ---- enrichment sweep: runs on load, on reconnect, and on an interval ----
-  const sweep = useCallback(async () => {
-    if (typeof navigator !== "undefined" && !navigator.onLine) return;
-    if (sweepingRef.current) return; // mutex — overlapping sweeps corrupt state
-    sweepingRef.current = true;
-    try {
-      let pending: LocalCatch[];
-      try {
-        pending = await pendingEnrichment();
-      } catch {
-        // Store unreachable. refresh() already surfaces this to the user; the
-        // sweep must not throw an unhandled rejection every 15s forever.
-        return;
-      }
-      for (const c of pending) {
-        if (!c.sourceUrl) continue;
-        // Every store write in this loop is individually guarded. The whole
-        // loop used to sit in a try/finally with no catch — the exact shape
-        // that caused the item-1 HALT — so a single failed write would abandon
-        // the rest of the batch and escape as an unhandled rejection.
-        try {
-          await updateCatch(c.id, { status: "sieving" });
-          await refresh();
+  // The sweep (links + voice) lives in a hook so both paths share one mutex
+  // and the same hard-won guarantees. See lib/sieve/useSweep.ts.
+  const sweep = useSweep(refresh);
 
-          // Network failure and store failure are DIFFERENT domains and must
-          // not share a catch: a successful extraction whose write failed was
-          // being relabelled as a network failure, discarding the title it had
-          // just fetched.
-          let data: {
-            ok?: boolean;
-            title?: string;
-            siteName?: string;
-            description?: string;
-            error?: string;
-          } | null = null;
-          try {
-            const res = await fetch("/api/enrich", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ url: c.sourceUrl }),
-            });
-            data = await res.json();
-          } catch {
-            data = null; // hard network failure
-          }
-
-          if (data?.ok) {
-            await updateCatch(c.id, {
-              status: "sieved",
-              sourceMeta: {
-                title: data.title,
-                siteName: data.siteName,
-                description: data.description,
-                // sourceMeta MERGES, so an earlier failure's error would
-                // otherwise survive on a catch that has since succeeded.
-                extractError: undefined,
-              },
-              bumpAttempts: true,
-            });
-          } else {
-            // "couldn't extract, saved anyway" — never a lost catch.
-            // statusFromAttempts matters: without it a failure caps out at 5
-            // attempts while the label still claims "retrying", promising work
-            // that has permanently stopped.
-            await updateCatch(c.id, {
-              sourceMeta: data
-                ? { siteName: data.siteName, extractError: data.error }
-                : { extractError: "couldn't reach the network" },
-              bumpAttempts: true,
-              statusFromAttempts: true,
-            });
-          }
-          await refresh();
-        } catch {
-          // The store failed for this catch. Skip it; the next sweep retries.
-          // The capture itself is already safe on disk — this is enrichment.
-          continue;
-        }
-      }
-    } finally {
-      sweepingRef.current = false;
-    }
-  }, [refresh]);
+  // Shared post-capture: refresh the list, slam the stamp, kick a sweep.
+  // Used by both the text submit and the voice recorder.
+  const afterCapture = useCallback(async () => {
+    await refresh();
+    setStamp(true);
+    window.clearTimeout(stampTimerRef.current);
+    stampTimerRef.current = window.setTimeout(() => setStamp(false), 1400);
+    void sweep();
+  }, [refresh, sweep]);
 
   useEffect(() => {
     // IndexedDB is client-only and has no server snapshot, so hydrating the
@@ -196,14 +117,7 @@ export default function Capture() {
     try {
       // THE SACRED WRITE — local, first, before anything touches the network.
       await addCatch(raw);
-      await refresh();
-
-      setStamp(true);
-      window.clearTimeout(stampTimerRef.current);
-      stampTimerRef.current = window.setTimeout(() => setStamp(false), 1400);
-
-      // enrichment is fire-and-forget, deliberately unawaited
-      void sweep();
+      await afterCapture();
     } catch {
       // Storage rejected: quota exceeded, Safari private mode, blocked upgrade.
       // CLAUDE.md — capture is sacred. A failed save must be LOUD and must not
@@ -275,10 +189,11 @@ export default function Capture() {
           >
             {saving ? "Catching…" : "Catch it"}
           </button>
+          <VoiceRecorder onCaptured={afterCapture} onError={setSaveError} />
           <span
             data-testid="connection-state"
             data-online={online}
-            className="font-mono text-[11px] uppercase tracking-wider text-ink/70"
+            className="ml-auto font-mono text-[11px] uppercase tracking-wider text-ink/70"
           >
             {online ? "online" : "offline — captures still land"}
           </span>
@@ -353,7 +268,10 @@ export default function Capture() {
                 <p className="font-serif text-lg leading-snug text-ink break-words">
                   {c.type === "link" && c.sourceMeta.title
                     ? c.sourceMeta.title
-                    : c.rawContent}
+                    : c.type === "voice" && !c.transcript
+                      ? // a voice catch before its transcript lands — never blank
+                        "Voice memo"
+                      : c.rawContent}
                 </p>
 
                 {/* mono = the machine talking */}
@@ -363,6 +281,38 @@ export default function Capture() {
                   </time>
                   <span aria-hidden>·</span>
                   <span>{c.type}</span>
+                  {c.type === "voice" && (
+                    <>
+                      {typeof c.durationMs === "number" && (
+                        <>
+                          <span aria-hidden>·</span>
+                          <span>
+                            {Math.floor(c.durationMs / 60000)}:
+                            {String(Math.floor((c.durationMs % 60000) / 1000)).padStart(
+                              2,
+                              "0",
+                            )}
+                          </span>
+                        </>
+                      )}
+                      <span aria-hidden>·</span>
+                      <span data-testid="transcription">
+                        {c.status === "sieved" && c.transcript ? (
+                          "transcribed"
+                        ) : c.status === "failed_extract" ? (
+                          <>couldn&rsquo;t transcribe — saved anyway</>
+                        ) : (
+                          <span data-testid="still-transcribing">
+                            {c.status === "sieving"
+                              ? "transcribing…"
+                              : c.enrichAttempts > 0
+                                ? `couldn't reach it — retrying (${c.enrichAttempts}/${MAX_ENRICH_ATTEMPTS})`
+                                : "queued for transcription"}
+                          </span>
+                        )}
+                      </span>
+                    </>
+                  )}
                   {c.type === "link" && (
                     <>
                       <span aria-hidden>·</span>
