@@ -98,6 +98,9 @@ export default function Capture() {
                 title: data.title,
                 siteName: data.siteName,
                 description: data.description,
+                // sourceMeta MERGES, so an earlier failure's error would
+                // otherwise survive on a catch that has since succeeded.
+                extractError: undefined,
               },
               bumpAttempts: true,
             });
@@ -148,15 +151,19 @@ export default function Capture() {
     setSaveError(null);
     setSaving(true);
 
+    // Clear SYNCHRONOUSLY, in the same tick as the click.
+    //
+    // Clearing after the await looks safer but races the user: submit, start
+    // typing the next thought, and the in-flight setValue("") wipes what they
+    // just typed. That is the hyperfocus burst pattern, and losing a
+    // half-written thought to it is unforgivable. On failure the text is put
+    // back (below), so nothing is destroyed either way.
+    setValue("");
+    inputRef.current?.focus();
+
     try {
       // THE SACRED WRITE — local, first, before anything touches the network.
       await addCatch(raw);
-
-      // Only clear the input once the write has actually landed. If we cleared
-      // first and the write failed, the user's words would be gone from both
-      // the box and the disk.
-      setValue("");
-      inputRef.current?.focus();
       await refresh();
 
       setStamp(true);
@@ -169,9 +176,21 @@ export default function Capture() {
       // CLAUDE.md — capture is sacred. A failed save must be LOUD and must not
       // destroy the user's text. No auto-dismiss: this state persists until
       // they succeed.
-      setSaveError(
-        "Couldn't save that one. Your words are still in the box — try again.",
-      );
+      setValue((current) => {
+        // If they have already started typing something else, do NOT clobber
+        // it — the failed text is shown in the error banner instead, so it is
+        // still recoverable by hand.
+        if (current.trim().length > 0) {
+          setSaveError(
+            `Couldn't save that one. Nothing was lost — here it is again: ${raw}`,
+          );
+          return current;
+        }
+        setSaveError(
+          "Couldn't save that one. Your words are still in the box — try again.",
+        );
+        return raw;
+      });
     } finally {
       submittingRef.current = false;
       setSaving(false);
@@ -212,7 +231,12 @@ export default function Capture() {
             data-testid="capture-submit"
             disabled={!value.trim() || saving}
             aria-busy={saving}
-            className="border-[3px] border-ink bg-accent px-6 py-2 font-mono text-sm font-bold uppercase tracking-wide text-ink shadow-hard transition-transform disabled:opacity-40 enabled:active:translate-x-[3px] enabled:active:translate-y-[3px] enabled:active:shadow-none"
+            /* Disabled state does NOT use opacity — that dropped the label to
+               2.5:1, and this is the default cold-open state every stranger
+               sees first. Instead it drops the accent and the hard shadow,
+               which per §6 already reads as "not pressable". The design system
+               does the work; the label stays at full ink, 15.9:1. */
+            className="border-[3px] border-ink px-6 py-2 font-mono text-sm font-bold uppercase tracking-wide text-ink transition-transform enabled:bg-accent enabled:shadow-hard disabled:border-ink/60 disabled:bg-ground enabled:active:translate-x-[3px] enabled:active:translate-y-[3px] enabled:active:shadow-none"
           >
             {saving ? "Catching…" : "Catch it"}
           </button>

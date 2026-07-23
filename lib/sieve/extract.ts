@@ -91,7 +91,7 @@ function guardedLookup(
   options: dns.LookupAllOptions,
   callback: LookupCallback,
 ): void {
-  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+  dns.lookup(unbracket(hostname), { ...options, all: true }, (err, addresses) => {
     if (err) return callback(err, []);
     if (addresses.length === 0) {
       return callback(new Error("could not resolve host"), []);
@@ -125,7 +125,26 @@ const safeAgent = new Agent({
  * Neither layer is sufficient alone: this one has a rebinding window, the
  * connector one has a literal-IP hole. Together they close both.
  */
-async function assertPublicHost(hostname: string): Promise<string | null> {
+/**
+ * `new URL("http://[::1]/").hostname` keeps the brackets, and getaddrinfo
+ * cannot resolve "[::1]" — so every IPv6-literal URL died with "could not
+ * resolve host" and the entire isPrivateIPv6 branch was unreachable. It failed
+ * safe, but for the wrong reason, and a legitimate public IPv6 link could never
+ * be enriched.
+ */
+function unbracket(hostname: string): string {
+  return hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+}
+
+async function assertPublicHost(rawHostname: string): Promise<string | null> {
+  const hostname = unbracket(rawHostname);
+  // A literal address needs no resolution — check it directly, since
+  // dns.lookup on a bare IPv6 literal is not guaranteed across platforms.
+  if (net.isIP(hostname)) {
+    return isPrivateAddress(hostname) ? "refusing to fetch a private address" : null;
+  }
   return new Promise((resolve) => {
     dns.lookup(hostname, { all: true }, (err, addresses) => {
       if (err || addresses.length === 0) return resolve("could not resolve host");

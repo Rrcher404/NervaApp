@@ -50,10 +50,16 @@ function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
     let settled = false;
+    let lateHandle: IDBOpenDBRequest | null = null;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       dbPromise = null; // let the next capture retry a fresh open
+      // If the open eventually succeeds after we gave up, close the orphaned
+      // connection — otherwise it lingers and blocks future version changes.
+      if (lateHandle) {
+        lateHandle.onsuccess = () => lateHandle?.result?.close();
+      }
       reject(new Error("indexeddb open timed out"));
     }, OPEN_TIMEOUT_MS);
 
@@ -77,6 +83,7 @@ function openDb(): Promise<IDBDatabase> {
       });
       return;
     }
+    lateHandle = req;
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(CATCHES)) {

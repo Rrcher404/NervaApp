@@ -50,6 +50,12 @@ test("every rendered text node meets WCAG AA against the parchment ground", asyn
   await page.getByTestId("capture-submit").click();
   await expect(page.getByTestId("catch-item")).toHaveCount(1);
 
+  // Let every running animation settle. Sampling mid-stamp reads opacity 0 and
+  // reports a 1.00:1 "failure" that is really a measurement artifact.
+  await page.evaluate(() =>
+    Promise.allSettled(document.getAnimations().map((a) => a.finished)),
+  );
+
   const samples = await page.evaluate(() => {
     // Tailwind 4 emits oklab() for alpha-modified colours. Resolve anything
     // the browser can parse down to sRGB by painting it and reading it back.
@@ -64,6 +70,32 @@ test("every rendered text node meets WCAG AA against the parchment ground", asyn
       ctx.fillRect(0, 0, 1, 1);
       const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
       return `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(4)})`;
+    };
+
+    // Effective opacity = product of every ancestor's opacity. Computed colour
+    // ignores it entirely, so a 14.97:1 pair inside an opacity-40 wrapper is
+    // really 2.46:1 on screen. The ::placeholder fix below closed one instance
+    // of "reports clean while a real failure sits on the page"; this closes the
+    // structurally identical one.
+    const effectiveOpacity = (el: Element): number => {
+      let o = 1;
+      let cur: Element | null = el;
+      while (cur) {
+        const v = parseFloat(getComputedStyle(cur).opacity);
+        if (!Number.isNaN(v)) o *= v;
+        cur = cur.parentElement;
+      }
+      return o;
+    };
+    /** Composite an rgba string through an extra opacity onto a background. */
+    const applyOpacity = (fg: string, bg: string, o: number): string => {
+      if (o >= 0.999) return fg;
+      const f = fg.match(/[\d.]+/g)!.map(Number);
+      const b = bg.match(/[\d.]+/g)!.map(Number);
+      const a = (f[3] ?? 1) * o;
+      return `rgba(${f[0] * a + b[0] * (1 - a)}, ${f[1] * a + b[1] * (1 - a)}, ${
+        f[2] * a + b[2] * (1 - a)
+      }, 1)`;
     };
 
     const out: { text: string; color: string; bg: string; size: number; weight: string }[] =
@@ -84,10 +116,13 @@ test("every rendered text node meets WCAG AA against the parchment ground", asyn
             }
             bgEl = bgEl.parentElement;
           }
+          // The page background anything translucent ultimately sits on.
+          const pageBg = toRGBA(getComputedStyle(document.body).backgroundColor);
+          const o = effectiveOpacity(parent);
           out.push({
             text: node.textContent.trim().slice(0, 45),
-            color: toRGBA(cs.color),
-            bg,
+            color: applyOpacity(toRGBA(cs.color), applyOpacity(bg, pageBg, o), o),
+            bg: applyOpacity(bg, pageBg, o),
             size: parseFloat(cs.fontSize),
             weight: cs.fontWeight,
           });
