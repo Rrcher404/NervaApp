@@ -357,3 +357,55 @@ default, the canonical production alias is public.)
 
 A stranger could reach this URL now and log their first catch. The §2 gate (ten wallets) and
 the §13 witness still stand outside the run — but the FIRST CATCH LOGGED moment now has a URL.
+
+---
+
+## Interlude — a deeper look at the grading process (think piece)
+
+Jene asked, mid-run, what the committee actually *is* underneath the scorecards. Worth
+answering honestly, because the mechanism turned out to matter more than any single number
+it produced.
+
+**The committee is not a quality checkbox. It is a disagreement engine.** Its entire value
+is that the personas are built to notice *different* things and to refuse *different* things.
+Kowalczyk feels a UI as a cost-per-tap; Halvorsen reads it for who it thinks it's talking to;
+Voss reads what the diff is silent about; Marchetti reads it as a transfer of labour;
+Nakamura reads it as text, not behaviour. Point five people with the same taste at a diff and
+you get one opinion five times. Point five *different* refusals at it and the blind spots
+stop overlapping. Every real bug this run surfaced landed in exactly one persona's lane and
+was invisible to the other four.
+
+**The number is the least important output.** Item 1's composite walked 7.6 → HALT → 9.2, and
+the digits explain nothing. What the run actually produced was a *list of specific failures a
+tired solo builder would have shipped*: a sacred write with no catch block, a live SSRF
+bypass, a data-loss dedupe that fired the success stamp over a discarded thought, an iOS Blob
+bug hiding behind a green Chromium suite. None of those were caught by "is it good?" They were
+caught by five narrow, hostile, *specific* questions asked in parallel. The gate's job is to
+convert a vague feeling of doneness into an enumerated punch list. The 8.0 threshold is just
+the tripwire that decides whether the list is short enough to ship.
+
+**The most important finding was structural, and nobody was assigned to find it.** Every
+serious bug in item 1 — all four — was introduced *by a fix*, not by the original build. The
+capture code was close to right the first time; the danger lived in the repair, made under
+time pressure, in code no longer read with fresh eyes. The committee is excellent at grading
+code that was *built* and was measurably worse at anticipating defects in code that was
+*repaired* — which is precisely where a hyperfocused ND builder at hour nine operates. That
+observation is why two seats were added mid-run: Nakamura (reads the diff as text, because the
+missing catch block had no behaviour to test and was obvious on *reading*) and Adeyemi (owns
+the rework diff every cycle, because the seat that should have caught the dedupe regression was
+empty). The process improved itself by watching itself fail. That is the part worth keeping.
+
+**The honest limit, stated in the plan and re-stated here (Voss's line for the record):** the
+committee is rigorous but it is still the app grading its own homework. It substitutes for
+Jene *during* a run. It does not substitute for the human witness (§13) or the ten wallets
+(§2). It stopped a real data-loss bug from reaching a stranger today — which is the entire
+point — but FIRST CATCH LOGGED still has to happen in front of a stranger who was never in
+the room.
+
+**Evidence, this run:**
+- `journal/screens/item1-01-cold-open-empty-state.png` — never a blank page
+- `journal/screens/item1-02-offline-first-catch-logged-stamp.png` — the stamp lands offline
+- `journal/screens/item1-04-back-online-cited.png` — a link cites itself on reconnect
+- `journal/screens/item2-01-record-button.png` — the voice affordance, one tap
+- `journal/screens/item2-02-transcribed.png` — transcript in serif, provenance in mono
+- Full narrative how-to: `journal/committee-process.html`
