@@ -1,0 +1,69 @@
+name: Gate
+
+# The machine half of the committee. Runs on every push, costs no agent tokens,
+# has no opinions to be argued out of, and never gets tired at 2am.
+#
+# The agent committee grades judgement: worst-day UX, hospitality, constitution
+# compliance, adversarial robustness. This grades the things a machine grades
+# better than any reviewer — and it runs first, so no human or agent time is
+# spent on a diff that doesn't typecheck.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The constitution as a machine gate (MASTER-PLAN §13 — the witness
+      # pattern encoded into the tooling).
+      - name: Constitution check
+        run: node scripts/constitution-check.mjs
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # Property-based invariants: for ANY sequence of captures,
+      # persisted == submitted. This is the layer that catches the class of bug
+      # example-based tests inherit the blind spot of.
+      - name: Unit + property tests
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+      - name: Install browsers
+        run: npx playwright install --with-deps chromium webkit
+
+      # Includes the WCAG AA guard, which computes real contrast ratios from
+      # computed styles (resolving oklab() and compositing CSS opacity).
+      - name: E2E — Chromium and WebKit
+        run: npm run test:e2e
+        env:
+          E2E_BASE_URL: http://localhost:3000
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

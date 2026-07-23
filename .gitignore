@@ -51,3 +51,4 @@ next-env.d.ts
 
 # session memory (local only)
 .remember/
+.playwright-mcp/
