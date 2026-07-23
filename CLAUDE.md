@@ -174,3 +174,32 @@ with kill authority over scope additions.**
 The committee gate substitutes for Jene *during a run*. It does not substitute for the human
 witness or the ten wallets. When the run completes, FIRST CATCH LOGGED still has to happen in
 front of a stranger.
+
+---
+
+## 8. The machine gates
+
+The committee grades judgement. These grade the things a machine grades better, and they
+run without agent tokens, opinions, or fatigue.
+
+```bash
+npm run gate          # everything below, in order
+npm run constitution  # the banned list + capture laws, as a grep over source
+```
+
+- `scripts/constitution-check.mjs` — greps application source for brick decrements, batch
+  re-clustering, breakable streaks, decay/wilt, leaderboards, variable-ratio rewards and
+  guilt copy. **Comments may name a banned mechanic** (that is how laws get documented in
+  situ); only real code counts. Mutation-tested.
+- `.githooks/pre-commit` — runs the constitution check before every commit.
+  Enable with `git config core.hooksPath .githooks` (done in this repo).
+- `.github/workflows/gate.yml` — CI on every push.
+
+**Rule that came out of the item-1 HALT: a guard with no failing test is decoration.**
+Every guard in this repo must have been *observed failing on purpose* — the property suite,
+the constitution check and the contrast guard all have.
+
+**Standing rule for framework code:** `AGENTS.md` is not decoration either. Next 16
+post-dates the model's training data. Pull current docs (Context7 / library-docs MCP or
+`node_modules/next/dist/docs/`) before writing framework code. This run already lost a
+working dev server to a config option reasoned from memory.

@@ -1,0 +1,10 @@
+#!/bin/sh
+# The witness pattern (MASTER-PLAN §13), mechanised.
+# §5 and the banned list override anything asked for in the heat of the moment.
+# A markdown file cannot enforce that at 2am. This can.
+node scripts/constitution-check.mjs || {
+  echo ""
+  echo "Commit blocked. If this is genuinely intended, the plan requires an"
+  echo "explicit, literal 'override' — and a line in BUILD-JOURNAL.md saying why."
+  exit 1
+}

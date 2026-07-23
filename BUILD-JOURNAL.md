@@ -194,3 +194,80 @@ a design problem — nothing here suggests the architecture is wrong.
 own homework. It stopped a real data-loss bug from shipping today, which is the point. It does not
 substitute for the human witness (§13) or the ten wallets (§2). FIRST CATCH LOGGED still has to
 happen in front of a stranger.
+
+---
+
+## Process review — the three questions (2026-07-23, post-HALT)
+
+Jene asked three questions after authorising rework cycle 3. They are answered here as
+changes, not opinions.
+
+### 1. What is the best way to address the issues found?
+
+**Fix the class, not the instance.** Every finding in this run had a general form, and
+fixing only the specific case is how the same bug returns wearing different clothes.
+
+| Instance | The class | What was actually done |
+|---|---|---|
+| Dedupe dropped deliberate repeats | A *heuristic* was answering an *identity* question | Removed it. Identity questions get structural answers (an in-flight guard on one gesture), never content-matching-within-a-window. Heuristics that discard user data are always wrong. |
+| Example tests passed while data was being lost | Tests written to close a finding inherit that finding's blind spot | Property-based tests asserting the invariant (`persisted == submitted` for any sequence), **mutation-tested** — reintroduce the bug, watch the suite fail, restore |
+| Contrast guard reported clean over a real failure — twice | A guard that has never been *seen to fail* is decoration | Guards now require a mutation test. The constitution check ships with a probe proving it trips on all 8 violation types. |
+| Constitution lived in a markdown file | A document cannot enforce anything at 2am | `scripts/constitution-check.mjs` — a machine gate in CI and `npm run gate` |
+
+**The rule that came out of it:** *a guard with no failing test is decoration.* Applied to
+the property suite, the constitution check, and the contrast guard — all three have now
+been observed failing on purpose.
+
+### 2. What does a real review team look like, and does the agent stack align?
+
+It did not. Mapping the B1 crew onto the roles a real team fills:
+
+| Real role | B1 crew | Status |
+|---|---|---|
+| Feature engineer / tech lead | Okonkwo | ✅ |
+| QA engineer | Kowalczyk | ✅ |
+| Accessibility + design critique | Halvorsen | ✅ |
+| Product owner / acceptance | Marchetti | ✅ |
+| Engineering manager / release | Solano | ✅ |
+| Security engineer | Voss | ⚠️ doing three jobs |
+| Reliability / SRE | — | ❌ **missing** |
+| **Peer code reviewer** | — | ❌ **missing** |
+| Automated CI gate | — | ❌ **missing** |
+
+**The code-reviewer gap has a body count.** The missing `catch` block that caused the HALT
+passed every test — necessarily, because a missing `catch` has *no behaviour to exercise*.
+It was obvious on **reading**. Nobody owned reading. Added `nakamura.md`; on his first pass
+he found four real bugs including a type cast hiding a crash that would have silently
+disabled the SSRF guard.
+
+**The reliability gap becomes critical at item 3**, when pg_cron and the sieve queue start
+running unattended — the exact failure the plan already predicts (§9). Added `adeyemi.md`,
+who also permanently owns **the rework diff**, the seat that was empty when cycle 2 shipped
+a worse bug than it fixed.
+
+**The machine gap** is now `.github/workflows/gate.yml` + `npm run gate`: constitution
+check, typecheck, lint, property tests, build, E2E on Chromium and WebKit, dependency
+audit. It runs on every push, costs no agent tokens, and has no opinions to be argued out
+of at 2am.
+
+### 3. Which available plugins assist this project?
+
+Adopted or scheduled, in order of value:
+
+1. **Context7 / library-docs MCP — adopt immediately, standing rule.** `AGENTS.md` says it
+   outright: *"This is NOT the Next.js you know."* Next 16 post-dates the model's training,
+   and this run already lost time to a `turbopack.root` config that broke the dev server.
+   **Pull the docs before writing framework code; do not reason from memory.**
+2. **`security-review`** — the SSRF bypass was found by an agent improvising. A dedicated
+   pass belongs in the gate before any production deploy.
+3. **`engineering:code-review`** — equips Nakamura's seat with a real checklist.
+4. **`engineering:testing-strategy`** — named in B1; belongs to Kowalczyk.
+5. **`design:accessibility-review`** — belongs to Halvorsen; the contrast guard has been
+   wrong twice and deserves a second opinion.
+6. **`hookify`** — the sleeper. A pre-commit hook running `constitution-check.mjs` turns
+   §5 from a document a tired builder can talk past into something that *cannot be
+   committed*. This is §13's witness pattern, mechanised.
+7. **`anthropic-skills:ship-check`** — the plan names it for the final gate (B2).
+8. **Vercel MCP + `vercel:deployments-cicd`** — for the production deploy and preview URLs.
+9. **`product-tracking-skills`** — for the append-only `events` table in §12, when the
+   metrics that have decision authority get instrumented.
