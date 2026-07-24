@@ -692,3 +692,102 @@ identical HALT by authorizing a third cycle. The same door is open here and only
    Log the fix + the external-probe on the punch list and proceed to Item 4.
 
 The constitution holds either way. Nothing here is a banned mechanic; capture is sacred and intact.
+
+---
+
+## Item 3 — Threads + human override · 2026-07-24 · **PROCEED** (rework cycle 3)
+
+**HALT lifted by Jene** (mirrors Item 1, where an identical HALT was lifted). Cycle 3 authorized
+to close the surviving discovery-swallow HIGH; the external-probe residual explicitly punch-listed,
+not this cycle.
+
+### Final scorecard (dim-3-only regrade, cycle 3)
+
+| Dim | What | Grader | Score |
+|---|---|---|---|
+| 1 | Clustering trust / acceptance in real DB | Kowalczyk | **8**/10 (stands) |
+| 2 | Worst-day UX | Kowalczyk + Halvorsen | **8**/10 (stands) |
+| 3 | Reliability & operability | Adeyemi + Voss + Nakamura | **8**/10 (regrade, was 7) |
+| 4 | Interface hospitality | Halvorsen | **8**/10 (stands) |
+| 5 | Constitution + banned list | Marchetti | **8**/10 (stands) |
+| | | **Composite** | **8.0** |
+
+**Verdict: PROCEED.** All three reliability lenses scored 8; all three sustained 8 under
+adversarial verify; `class_closed=true`, zero new green-forever siblings, no veto. Composite
+8.0 ≥ 8.0 → Item 3 clears the gate.
+
+### What closed the class (and how it was proven, not asserted)
+
+The cycle-2 HIGH was the error-swallowing CLASS — destructuring a Supabase result's `data` without
+its `error`, leaving a liveness row green. Cycle 3 closed it at the surface, verified three ways:
+
+1. **`lib/sieve/discovery.ts` (new).** `discoverUsers(admin, fn)` returns `{userIds, error}`; an
+   in-band RPC failure (dropped fn, revoked grant, SQL error) surfaces as an error string, never a
+   silently-empty list. Both cron discovery callers route `discovery.error` into
+   `drain_runs.error` / `audit_runs.error` — the exact columns the dead-man predicate keys on.
+2. **`propose_merges` swallow closed too.** A grep of the *whole* background surface (the discipline
+   cycle 2 lacked) found one more sibling: `audit:135` swallowed the merge-proposer's in-band error
+   — the audit's core product reading green while broken. Now throws into the per-user catch →
+   non-green. Every other bare `const { data }` was audited and is benign (a failed heartbeat INSERT
+   leaves `runId` undefined so no `completed_at` row is written and the dead-man's NOT EXISTS fires;
+   naming fetches are best-effort, re-driven `WHERE name IS NULL`).
+3. **Live end-to-end proof, both directions.** Revoked the `service_role` grant on
+   `users_with_pending_catches` (Solano's exact scenario). Drain returned `{ok:false, users:0,
+   error:"discovery … failed: permission denied for function"}`; `drain_runs` row 13 persisted
+   **non-green**. Re-granted → row 14 green. Verified against the actual dead-man SQL. The guard
+   test (`tests/discovery.test.ts`, 5 assertions) was *observed failing on purpose* — reverting the
+   helper to the old swallow turns the two error-surfacing assertions red; restoring → green.
+
+Verification: typecheck + lint + constitution + build clean; 26 unit (was 21); certificate PASS
+all 5 incl. determinism + recovery; 102 E2E green; advisors clean.
+
+### The committee got a fact wrong — and that is worth recording
+
+Solano's synthesis claimed the residual was that *"`ops_alerts` has no writer … no `drain_runs`
+dead-man cron at all."* **That is false against the live DB** — `cron.job` shows both
+`sieve-drain-deadman` (hourly :15) and `sieve-audit-deadman` (6-hourly), both inserting
+`ops_alerts` (`only_raises_warning=false`), confirmed by direct query. Solano graded off the *local*
+`supabase/migrations/` folder, where the reliability migration had been left a **stub** — the remote
+migration history (`drain_heartbeat_and_alerts`, `distinct_users_and_move_guard`,
+`resolve_merge_moves_cards`) was complete and authoritative, the local export was not. The verdict
+still stands: class-closure was proven independently and live, not on Solano's word. But the lesson
+is the constitution's own — *the repo is the source of truth* — and a stub migration that lies is
+the same disease as code that swallows errors. **Fixed this cycle:** the three reliability migrations
+were re-exported faithfully and idempotently from the live catalog, so `supabase db push` now
+reproduces production exactly. The committee is a tool, not an oracle; it was verified against live
+and corrected.
+
+### Residual risk carried forward (the corrected, verified version) → punch list
+
+1. **No external reader / probe.** The dead-men *do* exist and *do* write `ops_alerts` — but nothing
+   off-platform reads that table or pages a human, and the crons that write it run inside the same
+   pg_cron that would die. A free-tier project pause (3 of 5 org projects already inactive) silences
+   writers and watchers together. **Top punch-list item:** one external cron (a $0 uptime ping / a
+   GitHub Action) off this Supabase project, hitting a health endpoint that reads
+   `drain_runs`/`audit_runs`/`ops_alerts` and shouts off-platform.
+2. **The drain heartbeat is a *liveness* signal, not an *efficacy* one (the sharp carry-forward).**
+   `sieveForUser` returns `ok:true` even when per-catch embeds fail — those failures are recorded to
+   the `events` table via `logFailure` (not lost, catches re-driven), but they do **not** turn the
+   drain non-green. So a 100% embedding outage (e.g. a dead Gemini key) reads GREEN on the drain
+   heartbeat while `embed_failed` rows pile into `events`. Not a dim-3 HIGH (no data loss, failures
+   recorded, no budget breach — this is why all three verifiers attempted it and none sustained it),
+   but **when the external probe is built it MUST read `events` (embed_failed/assign_failed), not
+   just `*_runs.error`,** or a full embed outage will still page no one.
+
+**Constitution: CLEAR.** Marchetti stands at 8. Capture sacred and untouched; no data loss; no
+banned mechanic; the machine never silently reassigns; a reload shows truth.
+
+### The thing nobody said
+
+Three cycles, and the shape of the whole item is one lesson learned the hard way: **the disposition
+to swallow errors doesn't get fixed by fixing an instance — it gets fixed by naming the class and
+then grepping for every last member of it.** Cycle 1 named it. Cycle 2 fixed the one named instance
+(the endpoint) and the committee found it had simply moved up a layer — proving the point in the
+most humbling way possible. Only cycle 3, which grepped the *entire* background surface instead of
+patching the named line, actually closed it — and even then it found a third sibling
+(`propose_merges`) the grep caught that the eye had missed. The tell that we finally learned it:
+this cycle's residual isn't another swallow. It's a subtler, honest thing — the heartbeat is alive
+but not omniscient — surfaced by the committee *attacking its own fix* rather than by the next
+regrade catching us out. The error-swallowing class is closed. What replaced it at the top of the
+list is a real, named, out-of-scope engineering task, not a disguised instance of the same bug.
+That is what "done" looks like for a dimension.
