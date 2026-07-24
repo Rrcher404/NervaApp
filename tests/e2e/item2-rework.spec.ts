@@ -3,6 +3,14 @@ import { test, expect, type Page } from "@playwright/test";
 /** Regressions for every item-2 committee finding. A fix without a test comes back. */
 
 test.describe("HIGH: body-buffering DoS — reject before parsing", () => {
+  // Warm the route once so its first on-demand compile doesn't race an
+  // assertion (a dev-server flake, not a product behaviour).
+  test.beforeEach(async ({ request }) => {
+    await request
+      .post("/api/enrich", { data: { url: "https://example.com/" } })
+      .catch(() => {});
+  });
+
   test("/api/enrich rejects an oversized body with 413", async ({ request }) => {
     const huge = "x".repeat(200 * 1024); // 200KB, past the 64KB cap
     const res = await request.post("/api/enrich", {

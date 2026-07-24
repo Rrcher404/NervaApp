@@ -258,7 +258,15 @@ export async function startVoiceCatch(): Promise<string> {
   return id;
 }
 
-/** Flush the in-progress audio to disk. Called every few seconds while recording. */
+/**
+ * Flush the in-progress audio to disk. Called every few seconds while recording.
+ *
+ * Guarded read-modify-write in ONE transaction: it only writes while the catch
+ * is still `recording:true`. A flush that was triggered before finalize() but
+ * completed after it would otherwise overwrite the complete recording with an
+ * earlier, smaller buffer — a full-looking catch missing its end (Voss). Once
+ * finalized, a late flush is a silent no-op.
+ */
 export async function flushVoiceAudio(
   id: string,
   audioData: ArrayBuffer,
@@ -266,7 +274,21 @@ export async function flushVoiceAudio(
   durationMs: number,
 ): Promise<void> {
   if (audioData.byteLength === 0) return;
-  await updateCatch(id, { audioData, audioType, durationMs });
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const t = db.transaction(CATCHES, "readwrite");
+    const store = t.objectStore(CATCHES);
+    const get = store.get(id);
+    get.onerror = () => reject(get.error);
+    get.onsuccess = () => {
+      const existing = get.result as LocalCatch | undefined;
+      // No record, or already finalized/gone → drop this stale flush.
+      if (!existing || existing.recording !== true) return resolve();
+      const put = store.put({ ...existing, audioData, audioType, durationMs });
+      put.onsuccess = () => resolve();
+      put.onerror = () => reject(put.error);
+    };
+  });
 }
 
 /** Finalise a draft: it stops being a draft and becomes eligible for transcription. */

@@ -234,32 +234,48 @@ function decodeEntities(s: string): string {
     .trim();
 }
 
-/** Void elements never nest — they must not count toward depth. */
-const VOID_TAGS = new Set([
-  "br", "img", "hr", "meta", "link", "input", "area", "base", "col", "embed",
-  "source", "track", "wbr", "param", "keygen",
-]);
+const MAX_DOM_DEPTH = 250;
 
 /**
- * Cheap O(n) scan for pathological DOM nesting, which is what makes
- * Readability.parse() blow up cubically. Real articles nest ~20-40 deep; 250
- * is generous. Early-returns the instant the limit is crossed.
+ * Whether the REAL parsed tree nests past `limit`. Readability.parse() is cubic
+ * in nesting depth, so a deep DOM is what hangs it.
+ *
+ * A regex tag-counter (the first, naive attempt) was defeated by two
+ * characters: `<div></span>` — an unmatched `</span>` is ignored per the HTML5
+ * "any other end tag" rule, so a name-blind counter decrements on it and
+ * undercounts to "safe" while the real DOM stays 1500 deep. This walks the tree
+ * linkedom already built, so it measures what Readability will actually
+ * traverse. Iterative DFS with early-exit — O(nodes visited until the limit).
  */
-export function tooDeeplyNested(html: string, limit = 250): boolean {
-  const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)/g;
-  let depth = 0;
-  let m: RegExpExecArray | null;
-  while ((m = tagRe.exec(html)) !== null) {
-    const tag = m[2].toLowerCase();
-    if (VOID_TAGS.has(tag)) continue;
-    if (m[1] === "/") {
-      if (depth > 0) depth--;
-    } else {
-      depth++;
-      if (depth > limit) return true;
+function domDepthExceeds(root: unknown, limit: number): boolean {
+  if (!root) return false;
+  const stack: Array<{ el: { children?: ArrayLike<unknown> }; d: number }> = [
+    { el: root as { children?: ArrayLike<unknown> }, d: 1 },
+  ];
+  while (stack.length) {
+    const { el, d } = stack.pop()!;
+    if (d > limit) return true;
+    const kids = el.children;
+    if (kids) {
+      for (let i = 0; i < kids.length; i++) {
+        stack.push({ el: kids[i] as { children?: ArrayLike<unknown> }, d: d + 1 });
+      }
     }
   }
   return false;
+}
+
+/** Exported for tests: parse and check real DOM depth. Refuses unparseable input. */
+export function htmlTooDeeplyNested(html: string, limit = MAX_DOM_DEPTH): boolean {
+  try {
+    const { document } = parseHTML(html);
+    return domDepthExceeds(
+      (document as unknown as { documentElement?: unknown }).documentElement,
+      limit,
+    );
+  } catch {
+    return true;
+  }
 }
 
 function metaContent(html: string, patterns: RegExp[]): string | undefined {
@@ -429,15 +445,21 @@ export async function extractLinkMeta(url: string): Promise<ExtractResult> {
     //     a cheap O(n) depth scan skips Readability on a pathological DOM,
     //     degrading to meta-only extraction — the citation still stands.
     let articleText: string | undefined;
-    if (!tooDeeplyNested(html)) {
-      try {
-        const { document } = parseHTML(html);
+    try {
+      const { document } = parseHTML(html); // fast (~2-3ms) at any depth
+      // Gate on the REAL parsed tree, not a regex approximation of it.
+      if (
+        !domDepthExceeds(
+          (document as unknown as { documentElement?: unknown }).documentElement,
+          MAX_DOM_DEPTH,
+        )
+      ) {
         const parsed = new Readability(document as unknown as Document).parse();
         const text = parsed?.textContent?.replace(/\s+/g, " ").trim();
         if (text && text.length > 200) articleText = text.slice(0, MAX_ARTICLE_CHARS);
-      } catch {
-        articleText = undefined; // body extraction is a bonus, never load-bearing
       }
+    } catch {
+      articleText = undefined; // body extraction is a bonus, never load-bearing
     }
 
     if (!title) {

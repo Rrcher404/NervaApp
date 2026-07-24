@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import fc from "fast-check";
 import "fake-indexeddb/auto";
-import { tooDeeplyNested } from "@/lib/sieve/extract";
+import { htmlTooDeeplyNested } from "@/lib/sieve/extract";
 
 /**
  * Item-2 rework regressions, as invariants where possible.
@@ -86,23 +86,47 @@ describe("never-downgrade covers voice transcripts, not just link titles", () =>
 describe("the Readability depth guard bounds the parse-hang input", () => {
   it("flags pathologically nested HTML and passes normal articles", () => {
     const deep = "<div>".repeat(1500) + "x" + "</div>".repeat(1500);
-    expect(tooDeeplyNested(deep)).toBe(true);
+    expect(htmlTooDeeplyNested(deep)).toBe(true);
 
     const normal =
       "<html><body><article>" +
       "<p>A paragraph.</p>".repeat(200) +
       "</article></body></html>";
-    expect(tooDeeplyNested(normal)).toBe(false);
+    expect(htmlTooDeeplyNested(normal)).toBe(false);
+  });
+
+  it("is NOT defeated by Voss's mismatched-close-tag trick", () => {
+    // <div></span> — the </span> is ignored (no matching open), so every <div>
+    // stays open. A name-blind regex counter reads this as "safe"; the real
+    // parsed tree is genuinely 1500 deep. The DOM walk must catch it.
+    const trick = "<html><body>" + "<div></span>".repeat(1500) + "text</body></html>";
+    expect(htmlTooDeeplyNested(trick)).toBe(true);
   });
 
   it("does not miscount void elements as nesting (property)", () => {
     fc.assert(
       fc.property(fc.integer({ min: 0, max: 400 }), (n) => {
         // n <br> tags nest zero levels — must never trip the guard
-        const html = "<br>".repeat(n);
-        expect(tooDeeplyNested(html)).toBe(false);
+        const html = "<html><body>" + "<br>".repeat(n) + "</body></html>";
+        expect(htmlTooDeeplyNested(html)).toBe(false);
       }),
       { numRuns: 30 },
     );
+  });
+});
+
+describe("a late flush cannot truncate a finalized recording", () => {
+  it("flushVoiceAudio no-ops once the catch is finalized", async () => {
+    const id = await store.startVoiceCatch();
+    const full = new Uint8Array(1000).fill(7).buffer;
+    await store.finalizeVoiceCatch(id, full, "audio/webm", 8000);
+
+    // a flush that was in flight before finalize lands afterward with LESS data
+    const earlierSmaller = new Uint8Array(50).fill(1).buffer;
+    await store.flushVoiceAudio(id, earlierSmaller, "audio/webm", 2000);
+
+    const after = (await store.listCatches()).find((c) => c.id === id)!;
+    expect(after.audioData!.byteLength).toBe(1000); // the full recording, intact
+    expect(after.recording).toBe(false);
   });
 });
