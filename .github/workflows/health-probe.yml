@@ -63,14 +63,20 @@ jobs:
               "${HEALTH_URL}"
           }
 
-          code="$(probe || echo 000)"
+          # `probe` prints curl's own status (000 on a connection failure) and may
+          # exit non-zero; `|| true` swallows the exit WITHOUT appending a second
+          # "000" (the old `|| echo 000` produced "000000"). Empty → 000.
+          code="$(probe || true)"; code="${code:-000}"
           if [ "$code" != "200" ]; then
             # One re-check after a pause, so a single Vercel cold-start blip or a
             # transient network error does not page. A real outage (Supabase
             # paused, embed key dead, backlog) stays failed and pages.
             echo "First probe returned HTTP ${code}; re-checking in 30s to rule out a transient blip..."
             sleep 30
-            code="$(probe || echo 000)"
+            # `probe` prints curl's own status (000 on a connection failure) and may
+          # exit non-zero; `|| true` swallows the exit WITHOUT appending a second
+          # "000" (the old `|| echo 000` produced "000000"). Empty → 000.
+          code="$(probe || true)"; code="${code:-000}"
           fi
 
           body="$(cat body.json 2>/dev/null || true)"
