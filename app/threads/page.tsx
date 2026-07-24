@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
 import { supabaseServer } from "@/lib/supabase/server";
-import ThreadsSync from "@/components/ThreadsSync";
 import ThreadsView, {
   type ThreadLite,
   type CatchLite,
@@ -104,7 +103,6 @@ export default async function ThreadsPage() {
         </span>
       </header>
 
-      <ThreadsSync userId={user.id} />
 
       {empty ? (
         <div className="border-[3px] border-dashed border-ink/60 p-6">

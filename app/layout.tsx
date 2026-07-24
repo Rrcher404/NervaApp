@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Instrument_Serif, Inter, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import Nav from "@/components/Nav";
+import Sync from "@/components/Sync";
 import { supabaseServer } from "@/lib/supabase/server";
 
 /* The two-voice type rule (DESIGN-PRINCIPLES §5):
@@ -63,6 +64,9 @@ export default async function RootLayout({
     >
       <body className="flex min-h-full flex-col bg-ground text-ink">
         {user && <Nav />}
+        {/* Sync local-first catches to the server on the FIRST authed load,
+            wherever the user lands (not just /threads) — the ship-check fix. */}
+        {user && <Sync userId={user.id} />}
         {children}
       </body>
     </html>
