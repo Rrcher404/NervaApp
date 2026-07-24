@@ -1,0 +1,72 @@
+<!--
+  The Sieve &mdash; Magic Link email template.
+
+  APPLIED (2026-07-24) to BOTH Supabase Auth email templates:
+    · "Confirm sign up"  — what NEW users (every first-stranger at "Save your
+                            expedition") receive; signInWithOtp on a new account
+                            triggers the signup-confirmation email, not the magic link.
+    · "Magic link or OTP" — what RETURNING users receive when they sign in again.
+  Both use {{ .ConfirmationURL }}, so the same body works for both.
+  Subject on both: "Your link into The Sieve".
+
+  Constraints honoured:
+  · Inline styles + table layout only &mdash; Gmail/Outlook strip <style> blocks and flexbox.
+  · No web fonts, no images &mdash; Instrument Serif / Plex Mono don't load in mail clients,
+    so Georgia (serif = the human's material) and a monospace stack (mono = the machine
+    speaking) carry the two-voice rule. All-text, no tracking pixels → better inbox rate.
+  · Brand tokens, literal hex: ground #efeae3 · ink #111110 · accent #d8f21d.
+  · {{ .ConfirmationURL }} is the Supabase magic-link variable &mdash; do not rename it.
+
+  SUBJECT: Your link into The Sieve
+-->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#efeae3;margin:0;padding:0;">
+  <tr>
+    <td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background-color:#efeae3;border:3px solid #111110;">
+        <tr>
+          <td style="padding:32px 32px 8px 32px;">
+            <!-- mono = the machine speaking -->
+            <p style="margin:0;font-family:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#111110;">
+              The Sieve
+            </p>
+            <!-- serif = the human's material -->
+            <h1 style="margin:12px 0 0 0;font-family:Georgia,'Times New Roman',serif;font-size:30px;line-height:1.15;font-weight:400;color:#111110;">
+              Your expedition is saved.
+            </h1>
+            <p style="margin:16px 0 0 0;font-family:Georgia,'Times New Roman',serif;font-size:16px;line-height:1.5;color:#111110;">
+              Open this link in the same browser where you started, and everything you poured in
+              stays yours &mdash; across every device. No password to remember.
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:24px 32px 8px 32px;">
+            <table role="presentation" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="background-color:#d8f21d;border:3px solid #111110;">
+                  <a href="{{ .ConfirmationURL }}"
+                     style="display:inline-block;padding:14px 28px;font-family:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:14px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#111110;text-decoration:none;">
+                    Open The Sieve
+                  </a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 32px 32px 32px;">
+            <p style="margin:0;font-family:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px;line-height:1.6;letter-spacing:0.02em;color:#111110;opacity:0.7;">
+              Button not working? Paste this into your browser:
+            </p>
+            <p style="margin:8px 0 0 0;font-family:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px;line-height:1.6;word-break:break-all;color:#111110;">
+              {{ .ConfirmationURL }}
+            </p>
+            <p style="margin:20px 0 0 0;font-family:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px;line-height:1.6;letter-spacing:0.02em;color:#111110;opacity:0.55;">
+              You asked for this link. If it wasn't you, ignore this &mdash; nothing happens without opening it.
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
