@@ -8,12 +8,20 @@
 create unique index if not exists one_brick_per_catch
   on public.bricks (source_id) where source_action = 'catch';
 
+-- Capture is sacred: a brick-mint failure must NEVER abort the catch write. The
+-- inner block contains ANY failure (not only unique-violations) so a future
+-- constraint on bricks can't propagate out of this AFTER-INSERT trigger and roll
+-- back the catch. A missed brick is recoverable; a lost catch is not.
 create or replace function public.mint_catch_brick()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  insert into public.bricks (user_id, source_action, source_id)
-    values (NEW.user_id, 'catch', NEW.id)
-    on conflict do nothing; -- idempotent backstop; never block the sacred catch write
+  begin
+    insert into public.bricks (user_id, source_action, source_id)
+      values (NEW.user_id, 'catch', NEW.id)
+      on conflict do nothing;
+  exception when others then
+    null;
+  end;
   return NEW;
 end $$;
 

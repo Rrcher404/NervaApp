@@ -34,13 +34,13 @@ export function computeReentry(
     lastActivity == null ? 0 : Math.max(0, sieveDayIndex(now) - sieveDayIndex(lastActivity));
   const returning = daysAway >= 1;
 
+  // Absence is never surfaced as a number (§6). Warmth scales by band, but no
+  // greeting ever counts the days — a count is the first inch of a guilt wall.
   let greeting: string;
   if (!returning) {
     greeting = "Welcome back.";
   } else if (daysAway === 1) {
     greeting = "Welcome back — right where you left it.";
-  } else if (daysAway <= 7) {
-    greeting = `Welcome back. It’s been ${daysAway} days, and nothing moved without you.`;
   } else {
     greeting = "Welcome back. However long it’s been, your work kept its place.";
   }

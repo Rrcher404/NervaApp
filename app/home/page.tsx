@@ -38,12 +38,12 @@ export default async function HomePage() {
   const nowISO = renderedAt.toISOString();
 
   const [
-    { data: catches },
-    { data: threads },
-    { data: answered },
-    { data: dueCards, count: dueCount },
-    { count: brickCount },
-    { data: lastBrick },
+    { data: catches, error: eCatches },
+    { data: threads, error: eThreads },
+    { data: answered, error: eAnswered },
+    { data: dueCards, count: dueCount, error: eDue },
+    { count: brickCount, error: eBricks },
+    { data: lastBrick, error: eLastBrick },
   ] = await Promise.all([
     sb.from("catches").select("id, thread_id, status, captured_at, type, source_meta, transcript, raw_content"),
     sb.from("threads").select("id, name, name_provisional"),
@@ -52,6 +52,18 @@ export default async function HomePage() {
     sb.from("bricks").select("id", { count: "exact", head: true }),
     sb.from("bricks").select("created_at").order("created_at", { ascending: false }).limit(1),
   ]);
+
+  // Surface every failure (the class the committee named in item 3, kept closed).
+  // A silently-failed catches/bricks read would degrade a real return into a bare
+  // "Welcome back" with no state restore — defeating the criterion invisibly. So a
+  // read error is recorded, not swallowed into an empty result that looks calm.
+  const readErrors = [eCatches, eThreads, eAnswered, eDue, eBricks, eLastBrick].filter(Boolean);
+  if (readErrors.length) {
+    await sb
+      .from("events")
+      .insert({ user_id: user.id, kind: "home_read_error", payload: { errors: readErrors.map((e) => e!.message) } })
+      .then(() => {}, () => {}); // logging must never itself throw into the render
+  }
 
   const catchRows = (catches as CatchRow[] | null) ?? [];
   const threadRows = (threads as ThreadRow[] | null) ?? [];
@@ -65,9 +77,12 @@ export default async function HomePage() {
 
   // last belief = the most recently answered card's answer (by answer_history time)
   let lastBelief: string | null = null;
-  let latestAns = 0;
+  let latestAns = -1;
   for (const a of answeredRows) {
-    const at = a.answer_history?.length ? Date.parse(a.answer_history[a.answer_history.length - 1]?.at ?? "") : 0;
+    const parsed = a.answer_history?.length
+      ? Date.parse(a.answer_history[a.answer_history.length - 1]?.at ?? "")
+      : 0;
+    const at = Number.isNaN(parsed) ? 0 : parsed; // a missing timestamp mustn't exclude a real answer
     if (a.user_answer && at >= latestAns) {
       latestAns = at;
       lastBelief = a.user_answer;

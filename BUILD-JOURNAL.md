@@ -902,3 +902,87 @@ tired and hyperfocused and will ignore it. An adversarial reader at gate time is
 actually holds the line. The fast-follow closed the three holes — but the durable finding is that
 the discipline has to be *externally enforced every item*, because internalising it once demonstrably
 wasn't enough.
+
+---
+
+## Item 5 — Re-entry + game layer · 2026-07-24 · **PROCEED**
+
+**Acceptance criterion:** returning after 3 days absence shows warmth + state restore, never a gap.
+**Status: PASSES.** The strongest gate of the run.
+
+### Scorecard
+
+| Dim | What | Grader | Score |
+|---|---|---|---|
+| 1 | Acceptance (warmth + state restore) | Kowalczyk | **8**/10 |
+| 2 | Worst-day UX (the relapse moment) | Halvorsen | **9**/10 |
+| 3 | Reliability & operability | Adeyemi + Voss | **8**/10 (lower of 8/9) |
+| 4 | Interface hospitality | Halvorsen | **9**/10 |
+| 5 | Constitution + banned list | Marchetti | **9**/10 |
+| | | **Composite** | **8.6** |
+
+**Verdict: PROCEED.** No veto, no UNSKIPPABLE, and — unlike item 4 — comfortably above the line
+with every finding non-blocking. Marchetti's 9 on the constitution is the headline: the screen where
+ND tools go to die was built with the banned list as the design brief, and it held.
+
+### What earned it
+
+- **Absence is never a gap, enforced by a test.** `computeReentry` scales warmth by absence band
+  but a unit test asserts NO absence length from 1 to 400 days produces guilt copy (a regex over
+  streak/missed/behind/gap/overdue/…). The greeting always opens "Welcome back."
+- **State restore is real:** the last belief is the human's actual most-recent answer (serif); the
+  open question is a real due card (mono). One Next Tile always lights exactly one action from real
+  counts, so `/home` can never render blank.
+- **Bricks provably monotonic:** the catch→brick trigger mints exactly one attributed brick per
+  catch (partial-unique backstop scoped to `'catch'` so answered_card/quest bricks still repeat),
+  proven live (2 catches → 2 bricks); INSERT/SELECT-only RLS + no-update/delete/truncate triggers
+  mean no decrement path exists in code OR data.
+- **Quests vanish without residue:** pure, deterministic, date-seeded, unpersisted — an ignored
+  quest leaves no mark. Determinism also rules out variable-ratio.
+- **The lesson teaches, never ghostwrites:** the QFT Question Burst states the rules and hands the
+  rep to the human (§5).
+
+### Post-gate polish (strict improvements — no re-gate, they can't lower a score)
+
+The gate PASSED, so these weren't mandatory. But four findings touched recurring disciplines and
+were cheap, so they landed before item 6 rather than riding forward:
+
+1. **The error-swallow class, closed again.** Four graders' sharpest reliability note: `/home`'s
+   `Promise.all` destructured `{data}` without `.error`, so a failed catches read would silently
+   degrade a real 3-day return into a bare "Welcome back" with no restore — the item-3 class,
+   crawled into item 5 exactly as the `sieve-committee-discipline` memory predicted. Now every home
+   read error is recorded to `events` (`home_read_error`), not swallowed. **The memory was right:
+   the class tried to come back, and the committee — not the memory — caught it.**
+2. **The last numeric absence mention, gone.** `home.ts` no longer says "It’s been N days" (the −1
+   that kept dim 5 off a 10); every returning band now reframes with no count. Absence is never a
+   number anywhere.
+3. **Capture stays sacred under the trigger.** `mint_catch_brick` now contains ANY failure in a
+   nested block (not just unique-violations), so a future constraint on `bricks` can never propagate
+   out of the AFTER-INSERT trigger and roll back a catch.
+4. **A NaN tie-break** in the last-belief selection fixed (a missing history timestamp no longer
+   excludes a genuinely recent answer).
+
+Bonus, found while verifying: eslint's `globalIgnores` had replaced the framework defaults without
+re-adding generated dirs, so Playwright's minified trace bundles were being linted (30–109 errors
+per file) the moment a flaky retry produced a trace. Added `playwright-report/`, `test-results/`,
+`coverage/` to the ignore list — a latent gate hazard closed.
+
+### Honest gaps carried forward
+
+- **The authenticated `/home` was never rendered in a headless browser** (magic-link constraint,
+  identical to items 3 & 4). Logic is unit-certified (44 unit tests), the unauth surface is
+  browser-verified. Correctness risk low; *presentation* risk — do the two-voice fonts load, does
+  the contrast hold, does the ritual collapse on ack — is unverified and owed a live authed walk at
+  the ship-check.
+- Catch→brick is non-retroactive (pre-trigger catches have no brick) — no product impact, counter
+  starts now, append-only intact.
+
+### The thing nobody said
+
+For four items the committee has been the thing that catches what a written lesson can't. Item 5 is
+the first where that machinery produced a genuinely *calm* result — 8.6, one −1 quibble over a
+single sentence, nothing structural. It's tempting to read that as "we've internalised the
+constitution." The honest read is the opposite: dim 3 still surfaced the error-swallow class trying
+to re-enter through `/home`, and it took an adversarial grader to see it — again. The calm isn't
+that the disposition is gone; it's that the enforcement is finally routine. The lesson of item 5 is
+that "routine external enforcement" is the actual deliverable — not a team that no longer needs it.
