@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { sieveForUser } from "@/lib/sieve/pipeline";
+import { discoverUsers } from "@/lib/sieve/discovery";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,9 +42,11 @@ export async function POST(req: NextRequest) {
   let runError: string | null = null;
 
   // distinct users with catches still needing embed or threading (deduped
-  // server-side — the cap is on users, not catches).
-  const { data: rows } = await admin.rpc("users_with_pending_catches");
-  const userIds = (rows as string[] | null) ?? [];
+  // server-side — the cap is on users, not catches). discoverUsers surfaces an
+  // RPC failure instead of swallowing it into an empty list that reads green.
+  const discovery = await discoverUsers(admin, "users_with_pending_catches");
+  const userIds = discovery.userIds;
+  if (discovery.error) runError = discovery.error; // → drain_runs.error; dead-man fires
 
   let drained = 0;
   for (const uid of userIds) {
@@ -53,6 +56,11 @@ export async function POST(req: NextRequest) {
         if (Date.now() > started + 50_000) break;
         const res = await sieveForUser(admin, uid, started + 50_000);
         drained++;
+        // a batch-level query error is not a thrown exception — surface res.ok
+        // so a persistent embed/query failure doesn't drain "successfully".
+        if (!res.ok && res.error) {
+          runError = (runError ? runError + "; " : "") + `user ${uid}: ${res.error}`;
+        }
         if (!res.remaining) break;
       }
     } catch (e) {
@@ -71,5 +79,5 @@ export async function POST(req: NextRequest) {
       })
       .eq("id", runId);
   }
-  return NextResponse.json({ ok: true, users: userIds.length, batches: drained });
+  return NextResponse.json({ ok: !runError, users: userIds.length, batches: drained, error: runError });
 }

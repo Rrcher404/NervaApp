@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { discoverUsers } from "@/lib/sieve/discovery";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -84,8 +85,11 @@ export async function POST(req: NextRequest) {
   try {
     // distinct users who have threads — deduped server-side so the ~1000-row
     // cap is on USERS, not threads (past that a keyset cursor is needed).
-    const { data: users } = await admin.rpc("users_with_threads");
-    const userIds = (users as string[] | null) ?? [];
+    // discoverUsers surfaces an RPC failure instead of swallowing it into an
+    // empty list that would write audit_runs green with users=0.
+    const discovery = await discoverUsers(admin, "users_with_threads");
+    const userIds = discovery.userIds;
+    if (discovery.error) error = discovery.error; // → audit_runs.error; dead-man fires
 
     for (const uid of userIds) {
       // PER-USER ISOLATION: one poison user must not abort every user after it.
