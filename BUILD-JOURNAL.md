@@ -791,3 +791,114 @@ but not omniscient — surfaced by the committee *attacking its own fix* rather 
 regrade catching us out. The error-swallowing class is closed. What replaced it at the top of the
 list is a real, named, out-of-scope engineering task, not a disguised instance of the same bug.
 That is what "done" looks like for a dimension.
+
+---
+
+## Item 4 — The Return · 2026-07-24 · **PROCEED** (+ mandated fast-follow)
+
+**Acceptance criterion:** answering a card in your own words updates FSRS state and mints a brick.
+**Status: PASSES, proven live.** Committee PROCEEDed at composite **8.0** on the first gate — then
+named a three-item fast-follow that "must land before item 4 is called done." It landed.
+
+### First-gate scorecard
+
+| Dim | What | Grader | Score |
+|---|---|---|---|
+| 1 | Acceptance in the real system | Kowalczyk | **8**/10 |
+| 2 | Worst-day UX | Halvorsen | **8**/10 |
+| 3 | Reliability & operability | Adeyemi + Voss | **7**/10 |
+| 4 | Interface hospitality | Halvorsen | **8**/10 |
+| 5 | Constitution + banned list | Marchetti | **9**/10 |
+| | | **Composite** | **8.0** |
+
+**Verdict: PROCEED.** No Marchetti veto, no UNSKIPPABLE. But exactly on the line, propped by dim 3
+at 7 — and unlike a number we could wave through, the 7 was three *source-confirmed* defects that
+would ship. The account-deletion finding (append-only trigger blocks the auth.users cascade) was
+correctly ruled NOT UNSKIPPABLE: it is the inverse of data loss, no deletion flow exists yet to
+break, and it doesn't touch the answer loop. Punch-listed, launch-blocking, named.
+
+### Why I didn't just proceed — and didn't call it a HALT either
+
+The gate PASSED. The protocol says proceed. But item 5 is the game layer — it *reads* bricks and
+FSRS state — so building it on a brick-over-mint bug and a forgeable schedule would compound the
+exact invariants item 5 depends on. And two of the three defects were self-inflicted against laws
+already on the wall: the brick append-only intent, and the item-3 error-swallow class I had *just*
+closed and written a memory about. So I treated the committee's own instruction literally — the
+fast-follow "must land before item 4 is called done" — and landed it before starting item 5. Not
+talking past a proceed; finishing the item the way the committee scoped it.
+
+### The three fixes (each proven live, not asserted)
+
+1. **Brick over-mint → a DUE-GATE.** `answer_card` had no idempotency guard: a double-submit or a
+   replayed request minted multiple *permanent, undeletable* bricks from one card — its own "one
+   answered card = one brick" comment, violated. The elegant fix is a due-gate with a `FOR UPDATE`
+   row lock: answering pushes the card's `due_at` into the future, so an immediate re-call finds it
+   not-due and mints nothing — while a *legitimate* spaced replay on a later Return (due_at back in
+   the past) still mints, because "replays mint bricks; replay is practice." Idempotency that
+   doesn't break the intended replay. One mechanism, both behaviours.
+2. **Forgeable schedule → a bound.** The RPC stored client `fsrs_state`/`due_at` verbatim, so a
+   direct PostgREST call could set a never-resurface `due_at`. Now bounded: `now() < due_at <=
+   now()+10y`. (A full server-side FSRS recompute is the stronger fix; punch-listed.)
+3. **Question-gen re-opened the item-3 swallow class → discriminated result.** A transient Gemini
+   failure returned the same `null` as a legitimate SKIP, with no `events` — the exact disposition
+   the item-3 committee made us close. `generateQuestion` now returns `{ok|skip|error}`; the drain
+   routes `error` through `logFailure→events` (matching the embed path), `skip` stays silent. The
+   class stays closed. (This is why the `sieve-committee-discipline` memory exists: close the class,
+   then watch the next item to make sure it didn't crawl back in. It had. Now it hasn't.)
+
+Plus dim-2/4 polish: the in-progress Return answer is mirrored to the client store per card (capture
+is sacred — a crash mid-compose can't evaporate the sentence); a 15s fetch timeout; per-card
+textarea remount so autoFocus re-fires.
+
+**Live proof** (`scripts/acceptance-item4-auth.sql`, self-rolling-back on the production DB with RLS
++ `auth.uid()` simulated): **9/9** — answer advances FSRS (reps 0→1, New→Review, +3d) and mints
+exactly one brick; a double-submit is refused with NO second brick; a forged never-resurface
+schedule is refused; `answer_history` = 1. Plus the CI subset (`acceptance-item4.mts`), 6 srs unit
+tests, 32 unit total, 102 E2E, advisors clean.
+
+### Dim-3 regrade after the fast-follow
+
+A focused regrade (Adeyemi + Voss + adversarial verify) confirmed all three fixes closed in source
+and effective: the `FOR UPDATE` due-gate genuinely serialises concurrent submits *and* still lets a
+legitimate spaced replay through; the discriminated `{ok|skip|error}` routes every transient failure
+to `events`. **Dim 3: 7 → 8. Composite 7,8,8,8,9 → 8.2** — off the line. Both lenses independently
+caught one *latent* new defect I'd introduced with fix 2: my DB clamp (`due_at <= now()+10y`) was
+tighter than ts-fsrs's default `maximum_interval` (36500 days ≈ 100y), so a card past ~7 successful
+reps (~9 years of real elapsed time — unreachable in v1) would compute an honest interval the DB
+would reject. Cheap and correct to fix now rather than punch-list a known one-liner: `lib/srs.ts`
+now sets `maximum_interval: 3650`, so the scheduler and the bound agree. (Left on the punch list: the
+full server-side FSRS *recompute*, which would close the remaining within-bound forge.)
+
+### Constitution — the Orchard
+
+Marchetti's 9 (the run's highest) is earned in code, not copy: due cards surface only as a
+*deepening acid band* (riper = deeper, never red/wilt/overdue); `enable_short_term:false` makes FSRS
+intervals only *grow* (3→14→57→196d); "still shaky" = see-it-sooner is framed and implemented as
+help; the AI writes only the question (rejected unless it ends in `?`) and never the answer; the
+brick counter only goes up, in code *and* in the schema (append-only triggers). No streak, no
+league, no decay, no variable-ratio, no guilt. "Ripen, never rot" is compiled, not claimed.
+
+### Honest gaps carried forward
+
+- **The authenticated Return UI was not walked in a headless browser** — magic-link auth blocks it,
+  the same constraint under which item 3's authed pages were gated. The unauth surface *is* browser-
+  verified (/return → login redirect; Nav correctly hidden on login). The loop is certified on the
+  live DB. A human-shaped authenticated walk is owed at the ship-check.
+- **Punch list:** external uptime probe (from item 3); account/GDPR deletion vs append-only bricks
+  (launch-blocking, no deletion flow yet); full server-side FSRS recompute (defence-in-depth over
+  the 10y bound).
+- **GoTrue rejects the project's new-format API keys**, so the auth-path cert uses SQL RLS-simulation
+  rather than a client login. Recorded; not a product issue.
+
+### The thing nobody said
+
+Item 3 taught "close the class, then grep for every member." Item 4 taught the sequel: **the class
+you closed will try to crawl back into the next thing you build, and only an adversary looking at
+the new code will catch it.** The question-gen swallow wasn't a new mistake — it was the same
+error-swallowing reflex, reincarnated one feature over, written by someone (me) who had *just*
+filed a memory about not doing it. The memory didn't prevent it; the committee did. That is the
+argument for the committee in one sentence: a written lesson is a note to a future self who will be
+tired and hyperfocused and will ignore it. An adversarial reader at gate time is the witness that
+actually holds the line. The fast-follow closed the three holes — but the durable finding is that
+the discipline has to be *externally enforced every item*, because internalising it once demonstrably
+wasn't enough.

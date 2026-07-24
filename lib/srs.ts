@@ -28,7 +28,16 @@ import {
  */
 
 const scheduler = fsrs(
-  generatorParameters({ enable_fuzz: false, enable_short_term: false }),
+  generatorParameters({
+    enable_fuzz: false,
+    enable_short_term: false,
+    // Cap intervals at 10 years so the scheduler AGREES with answer_card's
+    // due_at <= now()+10y bound. ts-fsrs defaults maximum_interval to 36500 days
+    // (~100y); left there, a card past ~7 successful reps would compute an honest
+    // due_at beyond 10y that the DB rejects as 'invalid schedule' — a legitimate
+    // answer refused. 3650 days (~10y) keeps TS and the DB consistent.
+    maximum_interval: 3650,
+  }),
 );
 
 /** Daily Return queue cap (MASTER-PLAN §7: "cap the daily queue, silent drop"). */
