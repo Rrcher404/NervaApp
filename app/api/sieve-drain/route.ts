@@ -33,30 +33,43 @@ export async function POST(req: NextRequest) {
   const admin = supabaseAdmin();
   const started = Date.now();
 
-  // users with catches still needing embed or threading
-  const { data: rows } = await admin
-    .from("catches")
-    .select("user_id")
-    .neq("status", "failed_extract")
-    .or("embedding.is.null,thread_id.is.null")
-    .limit(2000);
-  const userIds = [...new Set((rows ?? []).map((r) => r.user_id as string))];
+  // Heartbeat: a dead drain (endpoint 404/500) is otherwise indistinguishable
+  // from a healthy one, because pg_net reports the SQL as succeeded regardless.
+  // This row is the honest record that the drain actually ran to completion.
+  const { data: run } = await admin.from("drain_runs").insert({}).select("id").single();
+  const runId = run?.id;
+  let runError: string | null = null;
+
+  // distinct users with catches still needing embed or threading (deduped
+  // server-side — the cap is on users, not catches).
+  const { data: rows } = await admin.rpc("users_with_pending_catches");
+  const userIds = (rows as string[] | null) ?? [];
 
   let drained = 0;
   for (const uid of userIds) {
     if (Date.now() > started + 50_000) break; // stay under the function budget
     try {
-      // drain this user in batches until done or time runs low
       for (let i = 0; i < 20; i++) {
         if (Date.now() > started + 50_000) break;
-        const res = await sieveForUser(admin, uid);
+        const res = await sieveForUser(admin, uid, started + 50_000);
         drained++;
         if (!res.remaining) break;
       }
-    } catch {
-      // one user's failure must not stop the drain for everyone else
-      continue;
+    } catch (e) {
+      runError = (runError ? runError + "; " : "") + (e instanceof Error ? e.message : "user failed");
     }
+  }
+
+  if (runId) {
+    await admin
+      .from("drain_runs")
+      .update({
+        completed_at: new Date().toISOString(),
+        users: userIds.length,
+        batches: drained,
+        error: runError,
+      })
+      .eq("id", runId);
   }
   return NextResponse.json({ ok: true, users: userIds.length, batches: drained });
 }

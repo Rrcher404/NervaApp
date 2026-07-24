@@ -72,43 +72,63 @@ export async function embed(text: string): Promise<EmbedResult> {
   const trimmed = text.trim();
   if (!trimmed) return { ok: false, error: "nothing to embed" };
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          model: `models/${EMBEDDING_MODEL}`,
-          content: { parts: [{ text: trimmed }] },
-          outputDimensionality: EMBEDDING_DIMS,
-          taskType: TASK_TYPE,
-        }),
-        signal: controller.signal,
-      },
-    );
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      return { ok: false, error: `${res.status}: ${t.slice(0, 160)}` };
+  // Retry on transient rate/availability errors (429/503) with backoff. Without
+  // this, a burst of embeds (or a shared-quota moment) partially fails and the
+  // clustering becomes non-deterministic — a real determinism hazard, not just
+  // a slow path.
+  const RETRYABLE = new Set([429, 503]);
+  const MAX_TRIES = 4;
+  for (let attempt = 0; attempt < MAX_TRIES; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${key}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: `models/${EMBEDDING_MODEL}`,
+            content: { parts: [{ text: trimmed }] },
+            outputDimensionality: EMBEDDING_DIMS,
+            taskType: TASK_TYPE,
+          }),
+          signal: controller.signal,
+        },
+      );
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        if (RETRYABLE.has(res.status) && attempt < MAX_TRIES - 1) {
+          await sleep(400 * 2 ** attempt + Math.floor(400 * Math.random()));
+          continue;
+        }
+        return { ok: false, error: `${res.status}: ${t.slice(0, 160)}` };
+      }
+      const json = (await res.json()) as { embedding?: { values?: number[] } };
+      const values = json.embedding?.values;
+      if (!values || values.length !== EMBEDDING_DIMS) {
+        return { ok: false, error: `unexpected embedding shape (${values?.length ?? 0} dims)` };
+      }
+      // B1: Gemini's 1536-dim output is NOT pre-normalized. Store unit vectors so
+      // avg()-centroids are true direction means, not magnitude-weighted (a long
+      // article would otherwise hijack the centroid — invisible to cosine tests).
+      return { ok: true, embedding: l2Normalize(values), model: EMBEDDING_MODEL };
+    } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") return { ok: false, error: "timed out" };
+      if (attempt < MAX_TRIES - 1) {
+        await sleep(400 * 2 ** attempt);
+        continue;
+      }
+      return { ok: false, error: "unreachable" };
+    } finally {
+      clearTimeout(timer);
     }
-    const json = (await res.json()) as { embedding?: { values?: number[] } };
-    const values = json.embedding?.values;
-    if (!values || values.length !== EMBEDDING_DIMS) {
-      return { ok: false, error: `unexpected embedding shape (${values?.length ?? 0} dims)` };
-    }
-    // B1: Gemini's 1536-dim output is NOT pre-normalized. Store unit vectors so
-    // avg()-centroids are true direction means, not magnitude-weighted (a long
-    // article would otherwise hijack the centroid — invisible to cosine tests).
-    const embedding = l2Normalize(values);
-    return { ok: true, embedding, model: EMBEDDING_MODEL };
-  } catch (e) {
-    const msg = e instanceof Error && e.name === "AbortError" ? "timed out" : "unreachable";
-    return { ok: false, error: msg };
-  } finally {
-    clearTimeout(timer);
   }
+  return { ok: false, error: "exhausted retries" };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 /** Cosine similarity of two equal-length vectors, for tests and app-side checks. */

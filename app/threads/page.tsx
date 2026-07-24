@@ -59,6 +59,9 @@ export default async function ThreadsPage() {
   const nameById = new Map<string, string>(
     ((threads as ThreadRow[]) ?? []).map((t) => [t.id, t.name ?? "unnamed"]),
   );
+  const provById = new Map<string, boolean>(
+    ((threads as ThreadRow[]) ?? []).map((t) => [t.id, t.name_provisional]),
+  );
   const byThread = new Map<string, CatchLite[]>();
   const inbox: CatchLite[] = [];
   for (const c of (catches as CatchRow[]) ?? []) {
@@ -84,6 +87,8 @@ export default async function ThreadsPage() {
     id: p.id,
     aName: nameById.get(p.thread_a) ?? "a thread",
     bName: nameById.get(p.thread_b) ?? "a thread",
+    aProvisional: provById.get(p.thread_a) ?? true,
+    bProvisional: provById.get(p.thread_b) ?? true,
     similarity: p.similarity,
   }));
 

@@ -484,3 +484,93 @@ this entry was written — the same instinct, applied one turn early.
 - The Gemini "verbatim" transcription is enforced by prompt discipline + temperature 0, not by
   architecture (Marchetti) — a spoken adversarial instruction rides the same channel. A bad
   transcript sits visibly wrong on the card, never trusted downstream, but it's a watch item.
+
+---
+
+## Item 3 — Threads + human override · 2026-07-23 · **REWORK 1**
+
+| Dim | What | Grader | Score |
+|---|---|---|---|
+| 1 | Acceptance criterion in real browser | Kowalczyk | **8**/10 (stands) |
+| 2 | Worst-day UX | Kowalczyk + Halvorsen | **8**/10 (regrade, was 6) |
+| 3 | Robustness / reliability | Voss + Adeyemi + Nakamura | **7**/10 (regrade, was 6) |
+| 4 | Interface hospitality | Halvorsen | **8**/10 (regrade, was 6) |
+| 5 | Constitution + banned list | Marchetti | **8**/10 (stands) |
+| | | **Composite** | **7.8** |
+
+**Verdict: REWORK 1.** Composite 7.8 < 8.0. No UNSKIPPABLE, no Marchetti veto — this is a
+number miss on one dimension, not a fail-regardless.
+
+### Why dim 3 is a 7 and not the 8 the mean would hand you
+
+Three graders folded into dim 3. Voss attacked the override as a hostile second user and it
+**held** (INVOKER + RLS + DEFINER owner-guard trigger, three live cross-user attacks all
+refused) — 8. Nakamura read the rework diff and found no serious bug introduced by a fix — 8.
+Adeyemi attacked observability and found a **live HIGH**: the every-2-minute sieve-drain — the
+workhorse the rework built to replace the open-tab dependency — has no heartbeat, and run 1 was
+proven to receive an HTTP 404 while `cron.job_run_details` recorded it `succeeded / "1 row"`. A
+permanently-broken drain is indistinguishable from a healthy one at every place an operator looks.
+
+They are not disagreeing about the artifact. Voss looked at the *security* of the override
+(clean). Nakamura looked at *code correctness* (clean). Only Adeyemi looked at *whether the new
+background machinery can fail silently* — and it can, provably, today. Averaging 8/7/8 to an 8
+would erase the one lane that examined the surface the whole rework rests on. The binding
+constraint is the HIGH. **Dim 3 = 7.**
+
+### Fix list — ranked by points-recovered-per-effort (only dim 3 regrades)
+
+Target: lift dim 3 from 7 → 8. Adeyemi named the exact bar: *drain instrumented to the audit's
+level + one annunciation path that reaches a human.*
+
+1. **Drain heartbeat (closes the HIGH — highest points/effort).** Add a `drain_runs` row per
+   invocation (started_at, completed_at, users, batches, failed), symmetric with `audit_runs`,
+   and have a check alert when no successful drain completed in ~10 min. Small table + one
+   insert; it is the single blocker holding dim 3 at 7. *~30 min.*
+2. **One real annunciation path (closes the MEDIUM, second half of the 8 bar).** The dead-man
+   currently only `raise warning` into a Postgres log nobody reads. Replace with an active
+   signal — insert an alerts/events row a monitored channel reads, or `net.http_post` to a
+   webhook. Add one external (non-pg_cron) uptime ping so scheduler-death can't silence watcher
+   and watched together. *~30 min.*
+3. **Paginate audit user-discovery (MEDIUM).** `from('threads').select('user_id')` caps at
+   ~1000 rows in PostgREST; past ~1000 threads the audit silently covers a subset and reports
+   `error=null`. Use a distinct-user query/keyset and record `users_seen vs users_total`. *~20 min.*
+
+### Carried forward (not dim-3 blockers this cycle — passed dims stay scored as-is)
+
+- **Silent override failure (MEDIUM, dim 2 + Nakamura, convergent).** `ThreadsView.act()` calls
+  `router.refresh()` only on success and does nothing on failure — no error state, no retry. On
+  the worst day the human taps "not here", the POST fails offline, and the UI gives zero feedback.
+  This is the exact silent-failure pattern the rework was praised for fixing in `ThreadsSync`,
+  reintroduced one layer up. Dim 2 held at 8 (MEDIUM, no data loss — the catch stays put), but
+  it lands on the punch list for the next item, not "someday".
+- **Pipeline comment lies (MEDIUM, Nakamura).** `pipeline.ts:24` says "Every failure is recorded
+  to the events table, never silently swallowed" — only the embed path logs; the embedding-write
+  and assign-RPC error paths `failed++` and persist nothing. Make the code match the sentence.
+- **Determinism contradiction (flag for dim 1, NOT regraded this cycle).** Halvorsen's run
+  returned `ACCEPTANCE: FAIL` on the determinism assertion (re-sieve not identical), while
+  Kowalczyk's dim-2 run reported `ACCEPTANCE PASS` and two graders (Adeyemi, Nakamura) could not
+  run the script at all — Gemini 429 quota during seeding. Dim 1 stands at 8 per the regrade
+  rule, but its certificate rests on a run at least one grader watched FAIL and two could not
+  reproduce. If the cert is load-bearing, re-run it green on a funded key before Item 4 leans
+  on it. Recorded honestly, not re-scored.
+- **resolve_merge deletes spaced-repetition cards (LOW, latent).** `question_cards.thread_id`
+  CASCADEs on the deleted thread and is never re-pointed. Harmless only because question_gen
+  doesn't create cards yet. Land the re-point before question generation ships.
+
+**Constitution: CLEAR.** Marchetti stands at 8. No banned mechanic: a failed override loses no
+data, the machine never silent-reassigns, a reload shows truth.
+
+### The thing nobody said
+
+Every lane found the same defect and each filed it under a different name. Kowalczyk called it
+"silent sync failure, now fixed." Then Adeyemi found the drain fails silently, Nakamura found the
+pipeline swallows two of three error paths under a comment swearing it never does, and Kowalczyk
+*themselves* found the new override actions fail silently — all in the same rework that was
+celebrated for adding the `ThreadsSync` retry surface. Nobody said it plainly: **the retry surface
+wasn't a fix, it was a fig leaf. The team learned the specific lesson — this one sync path — and
+not the general one — surface every failure — so the moment they built three new things (the
+drain, the override controls, the pipeline), all three went dark exactly the way the sync path
+used to.** This codebase has a standing disposition to swallow errors, and the `pipeline.ts:24`
+comment is the tell: someone wrote the aspiration out loud and then didn't hold the code to it
+three lines later. The dim-3 HIGH will get patched next cycle. The disposition won't, unless
+someone names it as the class instead of chasing it one instance at a time.

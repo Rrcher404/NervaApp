@@ -82,9 +82,10 @@ export async function POST(req: NextRequest) {
   const startedMs = Date.now();
 
   try {
-    // distinct users who have threads
-    const { data: users } = await admin.from("threads").select("user_id");
-    const userIds = [...new Set((users ?? []).map((u) => u.user_id))];
+    // distinct users who have threads — deduped server-side so the ~1000-row
+    // cap is on USERS, not threads (past that a keyset cursor is needed).
+    const { data: users } = await admin.rpc("users_with_threads");
+    const userIds = (users as string[] | null) ?? [];
 
     for (const uid of userIds) {
       // PER-USER ISOLATION: one poison user must not abort every user after it.
@@ -99,6 +100,9 @@ export async function POST(req: NextRequest) {
           .is("name", null)
           .limit(NAME_LIMIT);
         for (const t of unnamed ?? []) {
+          // Inner wall-clock guard — 20 names × a 20s Gemini timeout would blow
+          // the budget before the between-user check runs.
+          if (Date.now() > startedMs + 50_000) break;
           scanned++;
           const { data: members } = await admin
             .from("catches")

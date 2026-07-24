@@ -14,6 +14,24 @@ export interface SieveResult {
 }
 
 /**
+ * Surface every failure — the class the committee named ("standing disposition
+ * to swallow errors"). Every swallow site in the pipeline routes through here
+ * so the events table is the single, honest record of what didn't work.
+ */
+async function logFailure(
+  admin: ReturnType<typeof supabaseAdmin>,
+  userId: string,
+  kind: string,
+  catchId: string,
+  error: string,
+): Promise<void> {
+  await admin
+    .from("events")
+    .insert({ user_id: userId, kind, payload: { catch_id: catchId, error } })
+    .then(() => {}, () => {}); // logging must never itself throw into the pipeline
+}
+
+/**
  * Embed + thread one user's pending catches. Shared by the interactive route
  * and the cron drain.
  *
@@ -26,6 +44,7 @@ export interface SieveResult {
 export async function sieveForUser(
   admin: ReturnType<typeof supabaseAdmin>,
   userId: string,
+  deadlineMs = Date.now() + 50_000,
 ): Promise<SieveResult> {
   const { data: pending, error } = await admin
     .from("catches")
@@ -40,7 +59,14 @@ export async function sieveForUser(
   let embedded = 0;
   let threaded = 0;
   let failed = 0;
+  let ranOut = false;
   for (const c of pending ?? []) {
+    // Inner wall-clock guard: one heavy user under slow Gemini must not blow the
+    // whole function budget before the between-user check ever runs.
+    if (Date.now() > deadlineMs) {
+      ranOut = true;
+      break;
+    }
     let vec = c.embedding as string | null;
     let model = c.embedding_model as string | null;
 
@@ -58,11 +84,7 @@ export async function sieveForUser(
       const e = await embed(text);
       if (!e.ok || !e.embedding) {
         failed++;
-        await admin.from("events").insert({
-          user_id: userId,
-          kind: "embed_failed",
-          payload: { catch_id: c.id, error: e.error ?? "unknown" },
-        });
+        await logFailure(admin, userId, "embed_failed", c.id, e.error ?? "unknown");
         continue;
       }
       vec = JSON.stringify(e.embedding);
@@ -74,6 +96,7 @@ export async function sieveForUser(
         .eq("user_id", userId);
       if (upErr) {
         failed++;
+        await logFailure(admin, userId, "embed_write_failed", c.id, upErr.message);
         continue;
       }
       embedded++;
@@ -87,8 +110,19 @@ export async function sieveForUser(
       p_threshold: ASSIGN_THRESHOLD,
     });
     if (!assignErr) threaded++;
-    else failed++;
+    else {
+      failed++;
+      await logFailure(admin, userId, "assign_failed", c.id, assignErr.message);
+    }
   }
 
-  return { ok: true, embedded, threaded, failed, remaining: (pending?.length ?? 0) === SIEVE_BATCH };
+  // "remaining" if we filled a batch OR bailed on the clock — either way there
+  // is more to do and the caller should come back.
+  return {
+    ok: true,
+    embedded,
+    threaded,
+    failed,
+    remaining: ranOut || (pending?.length ?? 0) === SIEVE_BATCH,
+  };
 }

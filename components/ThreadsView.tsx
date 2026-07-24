@@ -17,7 +17,18 @@ export interface ProposalLite {
   id: string;
   aName: string;
   bName: string;
+  aProvisional: boolean;
+  bProvisional: boolean;
   similarity: number;
+}
+
+/** A thread name in the two-voice register: provisional machine guess = mono. */
+function ThreadName({ name, provisional }: { name: string; provisional: boolean }) {
+  return provisional ? (
+    <span className="font-mono text-sm uppercase tracking-wide text-ink/80">{name}</span>
+  ) : (
+    <span className="font-serif text-ink">{name}</span>
+  );
 }
 
 async function post(url: string, body: unknown): Promise<boolean> {
@@ -51,20 +62,46 @@ export default function ThreadsView({
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0); // bump to remount selects after a failure
   const [renaming, setRenaming] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState("");
 
   const otherThreads = (exceptId: string) => threads.filter((t) => t.id !== exceptId);
 
-  async function act(key: string, fn: () => Promise<boolean>) {
+  // Surface every failure (the class the committee named). An override that
+  // silently didn't apply — on the exact worst day the override exists for — is
+  // the same swallow the sync path was scolded for. So: on failure, say so,
+  // keep a retry, and remount the select so it doesn't show a move that never
+  // happened.
+  async function act(key: string, fn: () => Promise<boolean>): Promise<boolean> {
     setBusy(key);
+    setFailed(null);
     const ok = await fn();
     setBusy(null);
-    if (ok) router.refresh();
+    if (ok) {
+      router.refresh();
+    } else {
+      setFailed(key);
+      setNonce((n) => n + 1);
+    }
+    return ok;
   }
 
   return (
     <div className="space-y-6">
+      {failed && (
+        <div
+          data-testid="override-error"
+          role="alert"
+          className="border-[3px] border-ink bg-ground p-4"
+        >
+          <p className="font-mono text-sm uppercase tracking-wide text-ink">
+            That didn&rsquo;t go through — nothing changed. Check your connection and try again.
+          </p>
+        </div>
+      )}
+
       {proposals.length > 0 && (
         <section
           data-testid="merge-proposals"
@@ -76,8 +113,10 @@ export default function ThreadsView({
           <ul className="space-y-3">
             {proposals.map((p) => (
               <li key={p.id} className="flex flex-wrap items-center gap-2">
-                <span className="font-serif text-ink">
-                  {p.aName} <span className="font-mono text-ink/60">+</span> {p.bName}
+                <span className="inline-flex items-center gap-2">
+                  <ThreadName name={p.aName} provisional={p.aProvisional} />
+                  <span className="font-mono text-ink/70">+</span>
+                  <ThreadName name={p.bName} provisional={p.bProvisional} />
                 </span>
                 <span className="font-mono text-[11px] uppercase tracking-wide text-ink/60">
                   {Math.round(p.similarity * 100)}% alike
@@ -156,7 +195,7 @@ export default function ThreadsView({
                 {t.provisional ? (
                   <span className="font-mono text-sm uppercase tracking-wide text-ink/80">
                     {t.name ?? "unnamed"}{" "}
-                    <span className="text-ink/50">· suggested, tap to name</span>
+                    <span className="text-ink/70">· suggested, tap to name</span>
                   </span>
                 ) : (
                   <span className="font-serif text-xl text-ink">{t.name}</span>
@@ -178,6 +217,7 @@ export default function ThreadsView({
                 <span className="flex shrink-0 items-center gap-1">
                   {otherThreads(t.id).length > 0 && (
                     <select
+                      key={`move-${c.id}-${nonce}`}
                       data-testid="move-select"
                       aria-label="Move to another thread"
                       defaultValue=""
@@ -189,7 +229,7 @@ export default function ThreadsView({
                             post("/api/catch/move", { catchId: c.id, toThreadId: to }),
                           );
                       }}
-                      className="border border-ink/40 bg-ground font-mono text-[10px] uppercase text-ink/70"
+                      className="border-2 border-ink/60 bg-ground font-mono text-[10px] uppercase text-ink/70"
                     >
                       <option value="">move…</option>
                       {otherThreads(t.id).map((o) => (
@@ -208,7 +248,7 @@ export default function ThreadsView({
                         post("/api/catch/move", { catchId: c.id, toThreadId: null }),
                       )
                     }
-                    className="border border-ink/40 bg-ground px-2 font-mono text-[10px] uppercase tracking-wide text-ink/70"
+                    className="border-2 border-ink/60 bg-ground px-2 font-mono text-[10px] uppercase tracking-wide text-ink/70"
                   >
                     not here
                   </button>
@@ -239,6 +279,7 @@ export default function ThreadsView({
                 <span className="font-serif text-ink/80">{c.title}</span>
                 {threads.length > 0 && (
                   <select
+                    key={`inbox-${c.id}-${nonce}`}
                     data-testid="inbox-move-select"
                     aria-label="File into a thread"
                     defaultValue=""
@@ -250,7 +291,7 @@ export default function ThreadsView({
                           post("/api/catch/move", { catchId: c.id, toThreadId: to }),
                         );
                     }}
-                    className="shrink-0 border border-ink/40 bg-ground font-mono text-[10px] uppercase text-ink/70"
+                    className="shrink-0 border-2 border-ink/60 bg-ground font-mono text-[10px] uppercase text-ink/70"
                   >
                     <option value="">file into…</option>
                     {threads.map((o) => (
