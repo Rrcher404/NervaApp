@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 
 /**
@@ -35,7 +36,23 @@ function humanError(message: string): string {
   return message;
 }
 
-export default function LoginPage() {
+/** A failed magic-link callback redirects here with ?error=… (see
+ *  app/auth/callback). The most common real cause is a link opened in a
+ *  DIFFERENT browser than it was requested from — PKCE stores the code-verifier
+ *  per-browser — or a link that expired or was already used. Whatever the code,
+ *  the way out is the same: send a fresh one from here. Better than the silent
+ *  bounce a stranger got before. Calm, not alarmed (§ no punishment states). */
+function authCallbackError(): string {
+  return "That link didn’t open — magic links are one-time, they expire, and they only work in the same browser you asked for them from. Send a fresh one below.";
+}
+
+function LoginForm() {
+  // A failed magic-link callback redirects here with ?error=… — read it during
+  // render (useSearchParams is populated on both server and client, so no
+  // hydration mismatch and no setState-in-effect). The param is left in the URL
+  // deliberately: a reload should still explain why the last link didn't work.
+  const searchParams = useSearchParams();
+  const notice = searchParams.get("error") ? authCallbackError() : null;
   const [email, setEmail] = useState("");
   const [sentTo, setSentTo] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -95,6 +112,12 @@ export default function LoginPage() {
       <p className="mt-2 font-sans text-sm text-ink/70">
         A link, a place for it to live, and it&rsquo;s yours across every device. No password.
       </p>
+
+      {notice && (
+        <div data-testid="auth-notice" className="mt-6 border-[3px] border-ink bg-ground p-4">
+          <p className="font-sans text-sm text-ink/80">{notice}</p>
+        </div>
+      )}
 
       {sentTo ? (
         <div
@@ -166,5 +189,14 @@ export default function LoginPage() {
         </form>
       )}
     </main>
+  );
+}
+
+export default function LoginPage() {
+  // Suspense boundary required around useSearchParams (Next App Router).
+  return (
+    <Suspense>
+      <LoginForm />
+    </Suspense>
   );
 }

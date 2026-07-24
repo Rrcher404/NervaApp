@@ -36,7 +36,7 @@ export default function ReentryRitual({
           {reentry.returning ? "Good to see you again." : "Welcome back."}
         </h1>
         <span data-testid="brick-count" className="font-mono text-[11px] uppercase tracking-wider text-ink/70">
-          {brickCount} bricks
+          {brickCount} brick{brickCount === 1 ? "" : "s"}
         </span>
       </header>
     );
@@ -82,7 +82,7 @@ export default function ReentryRitual({
 
       <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
         <span className="font-mono text-[11px] uppercase tracking-wider text-ink/70">
-          {brickCount} bricks — and counting only up
+          {brickCount} brick{brickCount === 1 ? "" : "s"} — and counting only up
         </span>
         <button
           data-testid="reentry-ack"

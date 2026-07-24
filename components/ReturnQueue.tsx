@@ -121,7 +121,7 @@ export default function ReturnQueue({
             : "Cards ripen on their own schedule. Catch a few more things, and the sieve will return them here when it’s time."}
         </p>
         <p className="mt-4 font-mono text-[11px] uppercase tracking-wider text-ink/70">
-          <span data-testid="brick-count">{bricks}</span> bricks
+          <span data-testid="brick-count">{bricks}</span> brick{bricks === 1 ? "" : "s"}
           {banked > 0 ? ` · +${banked} today` : ""}
         </p>
       </section>
@@ -219,7 +219,7 @@ export default function ReturnQueue({
 
       <p className="font-mono text-[11px] uppercase tracking-wider text-ink/70">
         <span data-testid="queue-remaining">{queue.length}</span> ripe ·{" "}
-        <span data-testid="brick-count">{bricks}</span> bricks
+        <span data-testid="brick-count">{bricks}</span> brick{bricks === 1 ? "" : "s"}
         {banked > 0 ? ` · +${banked} today` : ""}
       </p>
     </div>
