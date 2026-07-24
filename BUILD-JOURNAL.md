@@ -574,3 +574,121 @@ used to.** This codebase has a standing disposition to swallow errors, and the `
 comment is the tell: someone wrote the aspiration out loud and then didn't hold the code to it
 three lines later. The dim-3 HIGH will get patched next cycle. The disposition won't, unless
 someone names it as the class instead of chasing it one instance at a time.
+
+---
+
+## Item 3 — Threads + human override · 2026-07-24 · **HALT** (rework cycle 2, final)
+
+**Acceptance criterion PASSES** (≥3 sane threads, zero cross-topic collisions, deterministic,
+recovery works — certificate green, all 5 assertions). **Gate FAILS.** Composite 7.8 < 8.0 with a
+source-confirmed dim-3 HIGH surviving. Second and final rework cycle → HALT per B2.
+
+### Final scorecard (dim-3-only regrade)
+
+| Dim | What | Grader | Score |
+|---|---|---|---|
+| 1 | Clustering trust / acceptance in real DB | Kowalczyk | **8**/10 (stands) |
+| 2 | Worst-day UX | Kowalczyk + Halvorsen | **8**/10 (stands) |
+| 3 | Reliability & operability | Voss + Nakamura + Solano | **7**/10 (regrade, was 7 — held) |
+| 4 | Interface hospitality | Halvorsen | **8**/10 (stands) |
+| 5 | Constitution + banned list | Marchetti | **8**/10 (stands) |
+| | | **Composite** | **7.8** |
+
+**Verdict: HALT.** No Marchetti veto (capture untouched, no data loss, no banned mechanic —
+this is a number miss + a surviving HIGH, not a fail-regardless). But composite 7.8 < 8.0 AND a
+genuine dim-3 HIGH remains, and this was the last allowed cycle.
+
+### What the rework genuinely closed (real work, not nothing)
+
+The cycle did substantial, verified work — which is why dim 3 held at 7 and did not drop:
+- **Endpoint-death HIGH: closed.** The `/api/sieve-drain` route now writes a `drain_runs`
+  heartbeat (started/completed/users/batches/error). Verified LIVE: production drain returned
+  `{ok:true, users:1, batches:1}`; SQL readback showed 3 completed runs, latest `err=none`, 0 open
+  alerts. A 404/500 at the endpoint no longer reads green.
+- **Per-item swallows: closed.** `pipeline.ts` routes every embed / embed-write / assign failure
+  through `logFailure` → `events`. The comment that used to lie (`pipeline.ts:24`) is now true.
+- **Budget: dual wall-clock guarded.** Inner guard in `sieveForUser` + the audit naming loop, so
+  one heavy user under slow Gemini can't blow the function budget before the between-user check.
+- **Recovery: proven.** Orphan re-drive (`embedding.is.null,thread_id.is.null`) + the override
+  error banner (ThreadsView surfaces failure + remounts the stale select) — certificate RECOVERY
+  assertion passes.
+- **Determinism hazard: closed.** `embed()` retries 429/503 with backoff+jitter; the cert now
+  passes determinism where a grader's cycle-1 run flaked on a shared-quota 429.
+- **Annunciation: real.** Both dead-men now `insert ops_alerts` (a pollable row) instead of only
+  `raise warning`, on independent schedules (drain :15 hourly, audit every 6h).
+
+### The HIGH that survived (source-confirmed, not asserted)
+
+**Nakamura found it, the adversarial verifier sustained it, Solano confirmed it in source and
+adjudicated the 8-vs-7 split against Voss.** The class the committee named in cycle 1 — *"a
+standing disposition to swallow errors,"* whose defining habit is destructuring Supabase `data`
+without checking `error` — is **narrowed, not closed.** It still lives at the two cron
+work-discovery calls, the very first I/O each job does:
+
+- `app/api/sieve-drain/route.ts:45` — `const { data: rows } = await admin.rpc("users_with_pending_catches")`
+- `app/api/audit/route.ts:87` — `const { data: users } = await admin.rpc("users_with_threads")`
+
+postgrest-js **resolves** (does not reject) on an in-band RPC failure — a dropped/renamed
+function, a revoked `service_role` grant, a SQL error inside the function. So a broken discovery
+function returns `data = null` → `userIds = []` → the loop no-ops → the route still writes
+`drain_runs.completed_at` with `users: 0, error: null`. The dead-man cron fires only
+
+```sql
+where not exists (select 1 from drain_runs
+  where completed_at is not null and error is null and started_at > now() - interval '30 minutes')
+```
+
+so that green row **silences the dead-man.** This is the exact shape the committee vetoed at 7 in
+cycle 1 — *"a dead component reads green forever"* — relocated from the endpoint layer (genuinely
+closed) up to the discovery layer. It is not theoretical: this session alone has granted and
+revoked grants on these very functions; a future migration that re-permissions
+`users_with_pending_catches` and forgets the `service_role` grant zeroes the drain and reads green.
+The dimension's own acceptance text names this failure verbatim, so it is a first-order dim-3 HIGH.
+
+### The one-line fix (for whoever picks this up)
+
+At both sites, capture and honor the RPC error; inspect `res.ok` at `sieve-drain:54`:
+
+```ts
+const { data: rows, error: rpcErr } = await admin.rpc("users_with_pending_catches");
+if (rpcErr) { runError = `discovery failed: ${rpcErr.message}`; }   // → drain_runs.error, dead-man fires
+```
+
+Set `drain_runs.error` (or `insert ops_alerts`) on discovery failure. That converts the last
+green-forever path into a loud one and closes the class at its two remaining sites. Est. ~20 min.
+
+### Residual risk — the thing nobody said
+
+Even with the discovery swallow fixed, **the entire annunciation chain lives inside the same
+Supabase project and pg_cron it is meant to watch, with zero external notifier or probe.** The
+dead-men write `ops_alerts`, but nothing outside the project reads them, and the crons that write
+them run on the same scheduler that would die. A free-tier project pause — **3 of this org's 5
+projects are already INACTIVE** — or a pg_cron stall silences the workers and the watchers
+*together*. The reliability system cannot observe its own death from outside. The heartbeat made
+the drain honest to a reader; it did not give the system an outside reader. That is the real
+ceiling on dim 3, and no in-project fix reaches it — it needs one external cron (a $0 uptime ping,
+a GitHub Action, anything off this Supabase project) hitting a health endpoint that reads
+`drain_runs`/`ops_alerts` and shouts off-platform.
+
+### Process honesty
+
+The regrade panel ran three reliability lenses; the **Adeyemi (reliability) lens failed to return
+valid structured output** (retry cap exceeded) — so the verdict rests on Voss (sustained 8, no
+HIGH), Nakamura (7, HIGH), and Solano's **own independent source read**, which confirmed the HIGH
+in code rather than counting votes. A missing lens cannot un-confirm a defect that exists in the
+source; if anything the panel ran *leaner* (more forgiving) than a full three, and still HALTed. Re-running
+to recover a more favorable draw would be gaming the gate — declined on principle.
+
+### Decision required (mirrors Item 1)
+
+Per B2 this is the terminal HALT for item 3: two rework cycles spent. At Item 1, Jene lifted an
+identical HALT by authorizing a third cycle. The same door is open here and only Jene may open it:
+
+1. **Authorize rework cycle 3** — apply the ~20-min discovery-error fix, re-run the cert + drain
+   evidence, regrade dim 3 only. High confidence it clears 8.0 (the surviving HIGH is small and
+   well-understood; dims 1,2,4,5 stand). This does NOT touch the residual-risk ceiling.
+2. **Accept the HALT and carry item 3 forward as-is** — the acceptance criterion passes and the
+   app works; the HIGH is an operability gap on background machinery, not a capture/data-loss risk.
+   Log the fix + the external-probe on the punch list and proceed to Item 4.
+
+The constitution holds either way. Nothing here is a banned mechanic; capture is sacred and intact.
