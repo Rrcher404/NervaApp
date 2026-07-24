@@ -131,11 +131,14 @@ export async function POST(req: NextRequest) {
             named++;
           }
         }
-        // propose merges (in-DB, correct operator, pair-keyed, skips dismissed)
-        const { data: n } = await admin.rpc("propose_merges", {
+        // propose merges (in-DB, correct operator, pair-keyed, skips dismissed).
+        // This is the audit's core product — an in-band RPC error here must not
+        // read green (same class as the discovery swallow). Capture and surface it.
+        const { data: n, error: mErr } = await admin.rpc("propose_merges", {
           p_user_id: uid,
           p_threshold: MERGE_THRESHOLD,
         });
+        if (mErr) throw new Error(`propose_merges: ${mErr.message}`); // → per-user error, run non-green
         proposals += typeof n === "number" ? n : 0;
       } catch (e) {
         // record but keep going — the next user is not this user's hostage.
