@@ -1069,3 +1069,110 @@ item got to be subtraction instead of addition. The cold open scores a 9 because
 left to defend against — the constitution had already been compiled into the layers below it. A
 stranger typing one sentence and watching a stamp slam is the entire product working, and it looks
 effortless precisely because the six items before it were not.
+
+---
+
+## Ship-check + closing · 2026-07-24 · **SHIP_WITH_FIXES**
+
+The One-Run Protocol is complete: all six build items through the gate, a holistic ship-check run,
+production deployed and verified. This is the honest accounting.
+
+### The run, in one table
+
+| Item | Criterion | Outcome | Final composite |
+|---|---|---|---|
+| 1 | Link survives airplane mode, cited when back | HALT → Jene lifted → PROCEED | (rework-heavy; offline-sacred) |
+| 2 | 60s voice ramble → cited transcript | PROCEED (2 reworks) | — |
+| 3 | 30 mixed catches → ≥3 sane threads, zero filing | HALT (cycle 2) → Jene lifted → PROCEED | **8.0** |
+| 4 | Answer a card → FSRS + brick | PROCEED + mandated fast-follow | **8.2** |
+| 5 | Return after 3 days → warmth + state restore | PROCEED | **8.6** |
+| 6 | Stranger → FIRST CATCH LOGGED <90s, no account | PROCEED | **9.0** |
+
+The composite climbed every item after 3 — not because the work got easier but because the
+constitution kept getting compiled into the layers below, so later items inherited guarantees
+instead of re-earning them. Two HALTs (items 1 and 3), both lifted by Jene with an authorized extra
+cycle, both mirrored exactly: the gate held the line, the human chose to push through, the fix
+landed and was proven.
+
+### The ship-check earned its place in the protocol
+
+The six item-gates each graded an item **in isolation**. The holistic ship-check graded the
+**composed, logged-in product** — and found three defects no item-gate could have caught, because
+they only exist in the seams between items:
+
+1. **The sync bug (the one that mattered most).** `syncCatches`/`runSieve` were mounted only on
+   `/threads`, but magic-link login lands on `/home`. So a converted stranger's local catches never
+   reached the server until they manually visited Threads — and `/home` computed a *false re-entry
+   gap* from an empty server, inverting item 5's entire promise, silently, on the fully-healthy path.
+   Every item-gate passed because item 5 was tested with server data already present; the bug lives
+   in the hand-off from the cold open to the authed loop. **Fixed this session:** `components/Sync.tsx`
+   now mounts in the authed layout, so the sync fires wherever the user lands.
+2. **The reliability chain reads its own liveness, not its efficacy.** A 100% Gemini embed outage
+   returns `ok:true` from `sieveForUser` (failures route to `events`, not `drain_runs.error`), so
+   the drain heartbeat reads green while embedding is dead — and nothing external reads `events`.
+   **Fixed this session (code half):** `/api/health` (secret-guarded, 200/503) reads liveness AND
+   the `events` failure signal AND an un-embedded backlog; verified live green. The off-platform
+   scheduler that hits it is a founder task (spawned).
+3. **The authed surface has never been rendered in front of a human, and the login email may never
+   arrive.** Magic-link runs on Supabase's default transport (no Resend/SMTP) — ~2-4 sends/hour,
+   often spam — so in any real signup window most strangers never get the link. And no E2E covers any
+   authed page; the composed authed render (fonts, contrast, ritual collapse, mobile) is unseen.
+   These need Jene: an email provider + domain, and one live authed walk.
+
+**Ship-check verdict: SHIP_WITH_FIXES, composite 6.25.** Not a victory-lap number — the right one.
+
+### The honest state of the app (Solano, verbatim-adjacent)
+
+The unauthenticated cold open is real and genuinely good: offline-first sacred capture that writes to
+IndexedDB before any network, degrades cleanly with the whole backend down, and reaches FIRST CATCH
+LOGGED in under 90 seconds with headroom — and the constitution is enforced *in code, not prose*
+(the clerical/epistemic line machine-gated over 58 files, ripen-never-rot structural, machine-
+proposes-human-disposes everywhere it matters). That is the strong half. The weak half is everything
+a converted stranger actually lives in — the authed loop — which was broken at three independent
+points that only surface in the composed, logged-in, real-email path. **Two of those three are now
+fixed in code this session** (the sync inversion and the efficacy-blind probe); the third (email
+transport + one human authed walk) is a tight, nameable founder punch list, not a rewrite. The
+cold-open demo works today; the product behind it is one short list away from working for real
+strangers.
+
+### What must land before the first strangers (all founder/infra — the code is done)
+
+1. **Magic-link email transport** — wire Resend/Postmark or Supabase SMTP + a verified domain, then
+   test-send to Gmail and Outlook and check spam. *This is the door.* (Task spawned.)
+2. **One live authed walk** of `/home`, `/return`, `/threads` via a real login — the primary surface
+   has never been seen. (~15 min; gated on #1.)
+3. **Schedule the off-platform `/api/health` poller** (GitHub Action / cron-job.org → founder alert).
+   (Endpoint done + live; scheduler task spawned.)
+4. **Namespace the local store** if the stranger demo runs on a shared device. (Task spawned.)
+
+### Fast-follows (after ship)
+
+Account/GDPR deletion carve-out (append-only trigger blocks the auth.users cascade); server-side
+FSRS recompute (closes the within-bound self-only forge); per-user Gemini key/throttle (a quota
+burst degrades multiple users at once); at least one authed E2E harness so the primary loop stops
+being logic-certified-only.
+
+### The runway (§13) and the witness
+
+The committee substituted for Jene *during* the run — it did not substitute for the human witness or
+the ten wallets, and it never claimed to. The gate held the line at 2am (twice, with real HALTs),
+caught the error-swallowing disposition every single item it tried to reappear (item 3 named the
+class, item 4 relocated it, item 5 grew it a third home, item 6 stayed clean only because an
+adversary looked), and — most valuably — the ship-check caught the integration bugs that item-gates
+structurally cannot. But the FIRST CATCH LOGGED moment still has to happen in front of a real
+stranger on a real phone with a real email that actually arrives. That is not done, and the honest
+journal says so.
+
+### The thing nobody said — about the whole run
+
+The committee's single most important contribution was not any individual score; it was the
+**ship-check catching what the item-gates could not**. Six green item-gates would have read as "done."
+They weren't — the product was broken in the one path a paying stranger takes, and *no amount of
+per-item rigor would have found it*, because the bug was in the composition, not the components. The
+lesson of the entire run is the argument for the holistic pass: rigor applied item-by-item produces
+items that pass and a product that doesn't. The gate that mattered most was the one that refused to
+grade the parts and insisted on grading the whole. The Sieve's cold open is finished and good; its
+authed loop is two founder tasks from real. That gap — named precisely, with the code half already
+closed — is the actual deliverable of this run, and it is worth more than a sixth 9.0 would have been.
+
+*— One-Run Protocol complete. Handoff to Jene: the four must-land tasks are spawned as chips.*
