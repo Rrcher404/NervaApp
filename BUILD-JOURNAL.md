@@ -986,3 +986,86 @@ constitution." The honest read is the opposite: dim 3 still surfaced the error-s
 to re-enter through `/home`, and it took an adversarial grader to see it — again. The calm isn't
 that the disposition is gone; it's that the enforcement is finally routine. The lesson of item 5 is
 that "routine external enforcement" is the actual deliverable — not a team that no longer needs it.
+
+---
+
+## Item 6 — Skin + cold open · 2026-07-24 · **PROCEED** (perfect 9.0)
+
+**Acceptance criterion:** a stranger reaches FIRST CATCH LOGGED in under 90 seconds without an
+account. **Status: PASSES, verified live on production.** The final build item, and the run's only
+clean sweep.
+
+### Scorecard
+
+| Dim | What | Grader | Score |
+|---|---|---|---|
+| 1 | Acceptance (90s to first catch, no account) | Kowalczyk | **9**/10 |
+| 2 | Worst-day UX (the cold open on a phone) | Halvorsen | **9**/10 |
+| 3 | Reliability & operability | Adeyemi + Voss | **9**/10 |
+| 4 | Interface hospitality + the §8 skin | Halvorsen | **9**/10 |
+| 5 | Constitution + banned list | Marchetti | **9**/10 |
+| | | **Composite** | **9.0** |
+
+**Verdict: PROCEED.** No veto, no UNSKIPPABLE, every dimension at 9.
+
+### What earned the sweep
+
+- **The acceptance, proven live and headless.** A fresh stranger (localStorage + IndexedDB cleared
+  on production) lands on one serif question, no nav, a pre-seeded empty state — types once, taps
+  once — catch logged, and *only then* the "Save your expedition?" acid card appears. The E2E asserts
+  the whole flow < 90s (it runs ~1.8s) across desktop and the iPhone-13 worst-day project. Item 1's
+  offline-first capture did the heavy lifting; item 6 gave it the cold-open frame.
+- **Value before identity, literally.** Solano confirmed at source: the save prompt is a plain
+  `<aside>` gated `!authed && catches.length > 0` — no wall, no modal, no route guard, no second
+  primary action before the stamp. A stranger's first catch never meets a signup gate.
+- **Nav vanishes for the stranger.** Auth-gated in the root layout, so the cold open has exactly one
+  focal point per screen.
+- **The skin holds the §8 brief.** Parchment/ink/acid, 2–3px ink borders, hard offset shadows,
+  serif display + mono machinery — and the acid accent is *never* the sole carrier of meaning (every
+  acid surface pairs full-ink text + an ink border; the disabled button drops accent+shadow, not
+  opacity, keeping the label at 15.9:1). AA enforced by the contrast suite.
+- **The guidance layer, folded in at the right scope.** `TheMethod` — a static, zero-JS `<details>`,
+  collapsed by default so the cold open pays nothing — carries the five stages, three fill-in
+  research-move starters, and the confidence-labeled lineage. It hands the user the rep; it never
+  performs it (§5). The full skill library stays frozen (§7); this is the lightweight in-moment layer
+  the guidance memo asked for.
+
+### The fix I made while the gate was still grading
+
+Adeyemi and Voss both went looking for the obvious reliability hole: the layout now calls
+`getUser()` on every request to gate nav — what happens on an auth outage? I saw it too, mid-gate,
+and it's a real one: an unguarded `getUser` would 500 the *sacred cold open* — the one screen that
+must work with every external API down. So `layout.tsx` and `page.tsx` now wrap it in try/catch,
+degrading to the anonymous no-nav view (which still captures, offline-first) and logging the outage
+to telemetry rather than swallowing it. Because the graders read source *live*, they read the fixed
+version — Voss's headline finding came back **refuted against current source**. The witness and the
+builder converged on the same defect within the same five minutes; the fix was in before the verdict.
+
+### Honest residuals → ship-check / punch list
+
+- **IndexedDB is origin-scoped, not user-scoped** (the one genuine non-cosmetic residual). On a
+  shared/kiosk browser a prior anonymous visitor's catches persist for the next. Disclosed by the
+  on-screen copy, and NOT a network cross-user leak (server data is RLS-scoped) — but the §7
+  "FIRST CATCH LOGGED in front of a stranger" walk may run on exactly such a machine. Namespace or
+  reset the local store before any public demo. (Spawned as a task.)
+- **`getUser` runs twice per `/` request** (layout + page) for signed-in users — minor latency; the
+  anon cold-open path short-circuits with no network call, so the 90s budget is untouched.
+- **The 90s budget is verified at machine speed** (~1.8s), not modeled human reading/typing. The
+  structural friction on the path is genuinely zero (no decision, no wall, no blank page), so the
+  criterion holds with headroom — but the real stopwatch still has to run in front of a human, which
+  is §7's whole point: the gate substitutes for Jene during the run, not for the ten wallets.
+- **Cut, not missing:** the La Cosecha session-end reveal and the mono working-ticker /
+  "three-cards-first-meaning" richer cold open belong to the Weave/session surface that v1 cuts on
+  principle. The leaner type → Catch it → stamp → invite clears the literal criterion; honest-number-
+  first already lives on the Return.
+
+### The thing nobody said
+
+The run's one perfect score landed on the simplest item — a cold open that is mostly *item 1 with
+the furniture removed*. That is not an accident, and it is the quiet thesis of the whole build:
+every hard-won guarantee underneath (the offline-first sacred write, the two-voice type system, the
+AA-rationed acid, the no-blank-page rule) was already paid for in the earlier items, so the last
+item got to be subtraction instead of addition. The cold open scores a 9 because there was nothing
+left to defend against — the constitution had already been compiled into the layers below it. A
+stranger typing one sentence and watching a stamp slam is the entire product working, and it looks
+effortless precisely because the six items before it were not.
