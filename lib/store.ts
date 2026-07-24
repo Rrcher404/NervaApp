@@ -392,6 +392,16 @@ export async function updateCatch(
       if (statusFromAttempts) {
         next.status = attempts >= MAX_ENRICH_ATTEMPTS ? "failed_extract" : "raw";
       }
+      // Dirty-tracking (B4/H4): if an EMBEDDABLE field changed, the catch must
+      // re-sync so the server re-embeds it. Enrichment lands after the initial
+      // sync, so without this the server would embed an empty/stale snapshot.
+      const embeddableChanged =
+        "transcript" in fields ||
+        "rawContent" in fields ||
+        "articleText" in fields ||
+        (fields.sourceMeta &&
+          ("title" in fields.sourceMeta || "description" in fields.sourceMeta));
+      if (embeddableChanged && existing.synced) next.synced = false;
       // Never downgrade a catch that is already sieved — covering STATUS, the
       // metadata, AND the transcript. Success looks different per type: a link's
       // marker is sourceMeta.title, a voice catch's is its transcript. Keying
