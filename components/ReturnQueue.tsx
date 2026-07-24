@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 export interface DueCard {
@@ -42,6 +42,38 @@ export default function ReturnQueue({
 
   const card = queue[0];
 
+  // Capture is sacred — and a Return answer is the human's material too. Mirror
+  // the in-progress sentence to the client store, keyed per card, so a crash or
+  // an accidental tab-close mid-compose can't evaporate it. Restored on mount,
+  // cleared only once the brick is banked.
+  // SSR-safe on purpose: localStorage is read in an EFFECT (post-hydration,
+  // client-only), not a lazy useState initializer, because a lazy init would
+  // render the draft on the client while the server rendered "" — a hydration
+  // mismatch. This is the one case the general set-state-in-effect guidance
+  // doesn't fit; we intentionally reload only when the card id changes.
+  useEffect(() => {
+    if (!card) return;
+    try {
+      const draft = localStorage.getItem(`return-draft-${card.id}`);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- SSR-safe post-hydration draft restore
+      if (draft) setAnswer(draft);
+    } catch {
+      /* private mode / no storage — the field still works, just not persisted */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload only on card change, not on every queue identity
+  }, [card?.id]);
+
+  function onAnswerChange(v: string) {
+    setAnswer(v);
+    if (card) {
+      try {
+        localStorage.setItem(`return-draft-${card.id}`, v);
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+
   async function harvest(feel: Feel) {
     if (!card || busy || answer.trim().length === 0) return;
     setBusy(true);
@@ -51,6 +83,7 @@ export default function ReturnQueue({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ cardId: card.id, answer: answer.trim(), feel }),
+        signal: AbortSignal.timeout(15_000), // a hung request must not strand the UI busy
       });
       if (!res.ok) throw new Error();
       const json = (await res.json()) as { intervalDays: number };
@@ -58,6 +91,11 @@ export default function ReturnQueue({
       setBricks((b) => b + 1);
       setBanked((n) => n + 1);
       setFlash({ interval: json.intervalDays });
+      try {
+        localStorage.removeItem(`return-draft-${card.id}`);
+      } catch {
+        /* best-effort */
+      }
       setAnswer("");
       setQueue((q) => q.slice(1));
       // let the confirmation breathe, then clear
@@ -123,9 +161,10 @@ export default function ReturnQueue({
           </label>
           <textarea
             id="answer"
+            key={card.id} /* remount per card so autoFocus re-fires for card 2+ */
             data-testid="answer-input"
             value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
+            onChange={(e) => onAnswerChange(e.target.value)}
             rows={4}
             autoFocus
             placeholder="In your own words…"

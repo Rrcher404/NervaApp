@@ -160,8 +160,16 @@ export async function generateCardsForUser(
     if (Date.now() > deadlineMs) break;
     const text =
       c.source_meta?.title || c.transcript || c.raw_content || "";
-    const question = await generateQuestion(text);
-    if (!question) continue; // vacuous or transient — retried next pass
+    const result = await generateQuestion(text);
+    if (result.status === "error") {
+      // TRANSIENT failure — record it (item-3 class: never swallow). The catch is
+      // untouched and retried next pass; a sustained Gemini outage is now visible.
+      failed++;
+      await logFailure(admin, userId, "question_gen_failed", c.id, result.error);
+      continue;
+    }
+    if (result.status === "skip") continue; // genuinely vacuous — silence is correct
+    const question = result.question;
     const { fsrs_state, due_at } = newCard();
     const { error: insErr } = await admin.from("question_cards").insert({
       user_id: userId,
