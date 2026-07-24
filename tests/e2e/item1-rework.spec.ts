@@ -9,6 +9,10 @@ test.describe("UNSKIPPABLE: the sacred write has a failure path", () => {
   test("a rejected local write is LOUD and does not destroy the user's text", async ({
     page,
   }) => {
+    // First test in the file — absorbs dev-server cold-start under loaded CI
+    // (30s hang once, 1.8s on retry). Triple the timeout to stop the cold-start
+    // flake; the assertions below are unchanged.
+    test.slow();
     // Break IndexedDB before any app script runs. openDb() memoises its
     // promise, so a "fail on the Nth call" patch would never fire on the
     // write path — the store has to be broken outright.
