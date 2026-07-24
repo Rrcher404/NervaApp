@@ -1,3 +1,4 @@
+import "server-only"; // build-time guard: importing this into a client component fails the build
 import { createClient } from "@supabase/supabase-js";
 
 /**

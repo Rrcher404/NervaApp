@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { timingSafeEqual } from "node:crypto";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -9,12 +10,16 @@ const MERGE_THRESHOLD = 0.8;
 const NAME_MODEL = "gemini-flash-latest";
 const NAME_LIMIT = 20; // threads named per run — re-entrant, WHERE name IS NULL
 
-/** Constant-time string compare so the shared secret can't be timing-probed. */
+/** Constant-time compare via the platform primitive (no length leak, no JIT games). */
 function safeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) {
+    // compare against self to keep the timing uniform, then fail
+    timingSafeEqual(ab, ab);
+    return false;
+  }
+  return timingSafeEqual(ab, bb);
 }
 
 async function nameThread(catchTexts: string[]): Promise<string | null> {
@@ -74,6 +79,7 @@ export async function POST(req: NextRequest) {
   let proposals = 0;
   let scanned = 0;
   let error: string | null = null;
+  const startedMs = Date.now();
 
   try {
     // distinct users who have threads
@@ -81,44 +87,52 @@ export async function POST(req: NextRequest) {
     const userIds = [...new Set((users ?? []).map((u) => u.user_id))];
 
     for (const uid of userIds) {
-      // name unnamed threads (re-entrant, provisional, coherence-gated)
-      const { data: unnamed } = await admin
-        .from("threads")
-        .select("id")
-        .eq("user_id", uid)
-        .is("name", null)
-        .limit(NAME_LIMIT);
-      for (const t of unnamed ?? []) {
-        scanned++;
-        const { data: members } = await admin
-          .from("catches")
-          .select("raw_content, transcript, source_meta")
+      // PER-USER ISOLATION: one poison user must not abort every user after it.
+      // A wall-clock guard keeps the whole run inside the function budget.
+      if (Date.now() > startedMs + 50_000) break; // leave headroom under maxDuration
+      try {
+        // name unnamed threads (re-entrant, provisional, coherence-gated)
+        const { data: unnamed } = await admin
+          .from("threads")
+          .select("id")
           .eq("user_id", uid)
-          .eq("thread_id", t.id)
-          .limit(12);
-        const texts = (members ?? []).map(
-          (m) =>
-            (m.source_meta as { title?: string } | null)?.title ||
-            m.transcript ||
-            m.raw_content ||
-            "",
-        );
-        const name = await nameThread(texts);
-        if (name) {
-          await admin
-            .from("threads")
-            .update({ name, name_provisional: true })
-            .eq("id", t.id)
-            .eq("user_id", uid);
-          named++;
+          .is("name", null)
+          .limit(NAME_LIMIT);
+        for (const t of unnamed ?? []) {
+          scanned++;
+          const { data: members } = await admin
+            .from("catches")
+            .select("raw_content, transcript, source_meta")
+            .eq("user_id", uid)
+            .eq("thread_id", t.id)
+            .limit(12);
+          const texts = (members ?? []).map(
+            (m) =>
+              (m.source_meta as { title?: string } | null)?.title ||
+              m.transcript ||
+              m.raw_content ||
+              "",
+          );
+          const name = await nameThread(texts);
+          if (name) {
+            await admin
+              .from("threads")
+              .update({ name, name_provisional: true })
+              .eq("id", t.id)
+              .eq("user_id", uid);
+            named++;
+          }
         }
+        // propose merges (in-DB, correct operator, pair-keyed, skips dismissed)
+        const { data: n } = await admin.rpc("propose_merges", {
+          p_user_id: uid,
+          p_threshold: MERGE_THRESHOLD,
+        });
+        proposals += typeof n === "number" ? n : 0;
+      } catch (e) {
+        // record but keep going — the next user is not this user's hostage.
+        error = (error ? error + "; " : "") + `user ${uid}: ${e instanceof Error ? e.message : "failed"}`;
       }
-      // propose merges (in-DB, correct operator, pair-keyed, skips dismissed)
-      const { data: n } = await admin.rpc("propose_merges", {
-        p_user_id: uid,
-        p_threshold: MERGE_THRESHOLD,
-      });
-      proposals += typeof n === "number" ? n : 0;
     }
   } catch (e) {
     error = e instanceof Error ? e.message : "audit failed";

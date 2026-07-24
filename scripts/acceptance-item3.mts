@@ -19,8 +19,17 @@
  *   2. ZERO cross-topic collisions (no thread mixes two major topics) — the trust-killer
  *   3. the near-duplicate lands with its twin
  *   4. determinism: same catches, same capture order, run twice -> identical partition
- * Fragmentation (a topic over-split into 2-3 threads) is safe and expected; the
- * nightly audit proposes merges for it.
+ *   5. RECOVERY: a human can move a mis-placed catch out of a thread (the override).
+ *
+ * HONESTY (do not hide this): a borderline single catch — a sparse note, or the
+ * marathon-training note that reads like any "my notes on…" — CAN attach to a
+ * semantically-adjacent thread at 0.72. No threshold separates those cleanly
+ * without shattering the major topics into 20 fragments (empirically verified).
+ * So the certificate does NOT claim the machine is never wrong at the margin.
+ * It claims the two things that actually protect the user: the machine never
+ * mixes two MAJOR topics, and when it IS wrong the human can fix it in one move.
+ * That — not a rigged "zero collisions" — is the honest trust guarantee.
+ * Fragmentation (a topic over-split into 2-3 threads) is safe; the audit proposes merges.
  *
  * Run: npx tsx scripts/acceptance-item3.mts
  * Needs GOOGLE_GENERATIVE_AI_API_KEY, NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY.
@@ -192,11 +201,34 @@ async function main() {
   console.log(`near-duplicate lands with cooking: ${nearDupWithCook ? "YES ✓" : "NO ✗"}`);
   console.log(`deterministic (re-sieve identical):${deterministic ? "YES ✓" : "NO ✗"}`);
 
+  // 5. RECOVERY — the human override. Pick a threaded catch, move it to Inbox,
+  //    verify it lands there. This is what makes "you keep the judgment" true:
+  //    when the machine is wrong at the margin, the human fixes it in one move.
+  const { data: threadedCatch } = await db
+    .from("catches")
+    .select("id")
+    .eq("user_id", USER)
+    .not("thread_id", "is", null)
+    .limit(1)
+    .single();
+  let recovery = false;
+  if (threadedCatch) {
+    await db.rpc("move_catch", { p_catch_id: threadedCatch.id, p_to_thread: null });
+    const { data: moved } = await db
+      .from("catches")
+      .select("thread_id")
+      .eq("id", threadedCatch.id)
+      .single();
+    recovery = moved?.thread_id === null; // now in Inbox — the override worked
+  }
+  console.log(`human can move a catch (recovery):  ${recovery ? "YES ✓" : "NO ✗"}`);
+
   await db.from("catches").delete().eq("user_id", USER);
   await db.from("threads").delete().eq("user_id", USER);
   await db.from("merge_proposals").delete().eq("user_id", USER);
 
-  const pass = saneThreads.length >= 3 && collisions.length === 0 && nearDupWithCook && deterministic;
+  const pass =
+    saneThreads.length >= 3 && collisions.length === 0 && nearDupWithCook && deterministic && recovery;
   console.log(pass ? "\nACCEPTANCE: PASS ✓" : "\nACCEPTANCE: FAIL");
   process.exit(pass ? 0 : 1);
 }

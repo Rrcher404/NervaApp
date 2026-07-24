@@ -1,6 +1,11 @@
 import { redirect } from "next/navigation";
 import { supabaseServer } from "@/lib/supabase/server";
 import ThreadsSync from "@/components/ThreadsSync";
+import ThreadsView, {
+  type ThreadLite,
+  type CatchLite,
+  type ProposalLite,
+} from "@/components/ThreadsView";
 
 export const dynamic = "force-dynamic";
 
@@ -10,15 +15,15 @@ interface CatchRow {
   transcript: string | null;
   type: string;
   thread_id: string | null;
-  source_meta: { title?: string; siteName?: string } | null;
+  source_meta: { title?: string } | null;
 }
 interface ThreadRow {
   id: string;
   name: string | null;
-  size: number;
+  name_provisional: boolean;
 }
 
-function catchTitle(c: CatchRow): string {
+function title(c: CatchRow): string {
   if (c.type === "link" && c.source_meta?.title) return c.source_meta.title;
   return c.transcript || c.raw_content || "Untitled";
 }
@@ -30,28 +35,59 @@ export default async function ThreadsPage() {
   } = await sb.auth.getUser();
   if (!user) redirect("/login");
 
-  // RLS scopes all of these to the signed-in user.
-  const [{ data: threads }, { data: catches }, { data: proposals }] = await Promise.all([
-    sb.from("threads").select("id, name, size").order("last_activity", { ascending: false }),
-    sb
-      .from("catches")
-      .select("id, raw_content, transcript, type, thread_id, source_meta")
-      .eq("status", "sieved"),
-    sb
-      .from("merge_proposals")
-      .select("id, thread_a, thread_b, similarity")
-      .eq("status", "pending"),
-  ]);
+  const [{ data: threads }, { data: catches }, { data: proposals }, { count: pending }] =
+    await Promise.all([
+      sb.from("threads").select("id, name, name_provisional").order("last_activity", {
+        ascending: false,
+      }),
+      sb
+        .from("catches")
+        .select("id, raw_content, transcript, type, thread_id, source_meta")
+        .eq("status", "sieved"),
+      sb
+        .from("merge_proposals")
+        .select("id, thread_a, thread_b, similarity")
+        .eq("status", "pending"),
+      // catches that have synced but haven't finished sieving yet (invisible before)
+      sb
+        .from("catches")
+        .select("id", { count: "exact", head: true })
+        .neq("status", "sieved")
+        .neq("status", "failed_extract"),
+    ]);
 
-  const byThread = new Map<string, CatchRow[]>();
-  const inbox: CatchRow[] = [];
+  const nameById = new Map<string, string>(
+    ((threads as ThreadRow[]) ?? []).map((t) => [t.id, t.name ?? "unnamed"]),
+  );
+  const byThread = new Map<string, CatchLite[]>();
+  const inbox: CatchLite[] = [];
   for (const c of (catches as CatchRow[]) ?? []) {
+    const lite = { id: c.id, title: title(c) };
     if (c.thread_id) {
       if (!byThread.has(c.thread_id)) byThread.set(c.thread_id, []);
-      byThread.get(c.thread_id)!.push(c);
-    } else inbox.push(c);
+      byThread.get(c.thread_id)!.push(lite);
+    } else inbox.push(lite);
   }
-  const threadList = ((threads as ThreadRow[]) ?? []).filter((t) => byThread.has(t.id));
+
+  const threadList: ThreadLite[] = ((threads as ThreadRow[]) ?? [])
+    .filter((t) => byThread.has(t.id))
+    .map((t) => ({
+      id: t.id,
+      name: t.name,
+      provisional: t.name_provisional,
+      catches: byThread.get(t.id) ?? [],
+    }));
+
+  const proposalList: ProposalLite[] = ((proposals as
+    | { id: string; thread_a: string; thread_b: string; similarity: number }[]
+    | null) ?? []).map((p) => ({
+    id: p.id,
+    aName: nameById.get(p.thread_a) ?? "a thread",
+    bName: nameById.get(p.thread_b) ?? "a thread",
+    similarity: p.similarity,
+  }));
+
+  const empty = threadList.length === 0 && inbox.length === 0;
 
   return (
     <main className="mx-auto w-full max-w-2xl px-6 py-10">
@@ -59,12 +95,13 @@ export default async function ThreadsPage() {
         <h1 className="font-serif text-3xl leading-tight text-ink">Your threads</h1>
         <span className="font-mono text-[11px] uppercase tracking-wider text-ink/70">
           {threadList.length} threads · {inbox.length} unsorted
+          {pending ? ` · ${pending} still sieving` : ""}
         </span>
       </header>
 
       <ThreadsSync userId={user.id} />
 
-      {threadList.length === 0 && inbox.length === 0 ? (
+      {empty ? (
         <div className="border-[3px] border-dashed border-ink/60 p-6">
           <p className="font-serif text-lg text-ink/80">
             Nothing sieved yet. Catch a few things and they&rsquo;ll gather themselves here.
@@ -74,69 +111,7 @@ export default async function ThreadsPage() {
           </p>
         </div>
       ) : (
-        <div className="space-y-6">
-          {threadList.map((t) => {
-            const members = byThread.get(t.id) ?? [];
-            return (
-              <section
-                key={t.id}
-                data-testid="thread"
-                className="border-[3px] border-ink bg-ground p-5 shadow-hard"
-              >
-                <div className="mb-3 flex items-baseline justify-between gap-3">
-                  <h2 className="font-serif text-xl text-ink">
-                    {t.name ?? "Unnamed thread"}
-                  </h2>
-                  <span className="font-mono text-[11px] uppercase tracking-wider text-ink/70">
-                    {members.length}
-                  </span>
-                </div>
-                <ul className="space-y-2">
-                  {members.map((c) => (
-                    <li
-                      key={c.id}
-                      data-testid="thread-catch"
-                      className="border-l-[3px] border-ink/30 pl-3 font-serif text-ink"
-                    >
-                      {catchTitle(c)}
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            );
-          })}
-
-          {inbox.length > 0 && (
-            <section
-              data-testid="inbox"
-              className="border-[3px] border-dashed border-ink/60 p-5"
-            >
-              <div className="mb-3 flex items-baseline justify-between gap-3">
-                <h2 className="font-serif text-xl text-ink/80">Unsorted</h2>
-                <span className="font-mono text-[11px] uppercase tracking-wider text-ink/60">
-                  waiting for company
-                </span>
-              </div>
-              <ul className="space-y-2">
-                {inbox.map((c) => (
-                  <li
-                    key={c.id}
-                    className="border-l-[3px] border-ink/20 pl-3 font-serif text-ink/80"
-                  >
-                    {catchTitle(c)}
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          {(proposals?.length ?? 0) > 0 && (
-            <p className="font-mono text-[11px] uppercase tracking-wider text-ink/70">
-              {proposals!.length} merge suggestion{proposals!.length === 1 ? "" : "s"} pending
-              your call
-            </p>
-          )}
-        </div>
+        <ThreadsView threads={threadList} inbox={inbox} proposals={proposalList} />
       )}
     </main>
   );

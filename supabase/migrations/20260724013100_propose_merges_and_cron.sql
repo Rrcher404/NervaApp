@@ -40,3 +40,10 @@ select cron.schedule('sieve-audit-deadman', '0 */6 * * *', $CRON$
     then raise warning 'sieve audit dead-man: no successful audit run in 26h'; end if;
   end $inner$;
 $CRON$);
+
+-- (added later) server-side drain every 2 min — decouples embed+thread from an
+-- open tab. Scheduled out of band (uses the same Vault audit_url/audit_secret):
+--   select cron.schedule('sieve-drain','*/2 * * * *', $$ select net.http_post(
+--     url := replace((select decrypted_secret from vault.decrypted_secrets where name='audit_url'),'/api/audit','/api/sieve-drain'),
+--     headers := jsonb_build_object('Content-Type','application/json','x-audit-secret',(select decrypted_secret from vault.decrypted_secrets where name='audit_secret')),
+--     body := jsonb_build_object('at',now()), timeout_milliseconds := 55000); $$);

@@ -33,6 +33,17 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Skip static assets; run on pages + API routes.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)"],
+  // ONLY the authenticated surface. The capture flow (/, /api/enrich,
+  // /api/transcribe) is anonymous and local-first (§8 value-before-identity) —
+  // running the session refresh there is both unnecessary and adds latency to
+  // the sacred capture path.
+  matcher: [
+    "/threads/:path*",
+    "/login",
+    "/auth/:path*",
+    "/api/sieve/:path*",
+    "/api/catch/:path*",
+    "/api/merge/:path*",
+    "/api/thread/:path*",
+  ],
 };
