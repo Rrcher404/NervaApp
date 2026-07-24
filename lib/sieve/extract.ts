@@ -234,6 +234,34 @@ function decodeEntities(s: string): string {
     .trim();
 }
 
+/** Void elements never nest — they must not count toward depth. */
+const VOID_TAGS = new Set([
+  "br", "img", "hr", "meta", "link", "input", "area", "base", "col", "embed",
+  "source", "track", "wbr", "param", "keygen",
+]);
+
+/**
+ * Cheap O(n) scan for pathological DOM nesting, which is what makes
+ * Readability.parse() blow up cubically. Real articles nest ~20-40 deep; 250
+ * is generous. Early-returns the instant the limit is crossed.
+ */
+export function tooDeeplyNested(html: string, limit = 250): boolean {
+  const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)/g;
+  let depth = 0;
+  let m: RegExpExecArray | null;
+  while ((m = tagRe.exec(html)) !== null) {
+    const tag = m[2].toLowerCase();
+    if (VOID_TAGS.has(tag)) continue;
+    if (m[1] === "/") {
+      if (depth > 0) depth--;
+    } else {
+      depth++;
+      if (depth > limit) return true;
+    }
+  }
+  return false;
+}
+
 function metaContent(html: string, patterns: RegExp[]): string | undefined {
   for (const re of patterns) {
     const m = html.match(re);
@@ -391,17 +419,25 @@ export async function extractLinkMeta(url: string): Promise<ExtractResult> {
       /<time[^>]+datetime=["']([^"']+)["']/i,
     ]);
 
-    // Readability for the article body. It can throw on malformed DOM — that
-    // must never fail the whole extraction, since the citation is already in
-    // hand. Best-effort, capped.
+    // Readability for the article body. Two dangers, both handled:
+    //   - it can THROW on malformed DOM (caught below), and
+    //   - it can HANG: Readability.parse() is cubic in DOM nesting depth, so a
+    //     ~9KB page nested 1500-deep pinned a CPU for 21s and the 1.5MB cap
+    //     allowed 300s+. The synchronous parse can't be interrupted in-thread
+    //     (a worker with terminate() is the alternative, but a spawned worker
+    //     file is fragile under serverless bundling), so we PREVENT the input:
+    //     a cheap O(n) depth scan skips Readability on a pathological DOM,
+    //     degrading to meta-only extraction — the citation still stands.
     let articleText: string | undefined;
-    try {
-      const { document } = parseHTML(html);
-      const parsed = new Readability(document as unknown as Document).parse();
-      const text = parsed?.textContent?.replace(/\s+/g, " ").trim();
-      if (text && text.length > 200) articleText = text.slice(0, MAX_ARTICLE_CHARS);
-    } catch {
-      articleText = undefined; // body extraction is a bonus, never load-bearing
+    if (!tooDeeplyNested(html)) {
+      try {
+        const { document } = parseHTML(html);
+        const parsed = new Readability(document as unknown as Document).parse();
+        const text = parsed?.textContent?.replace(/\s+/g, " ").trim();
+        if (text && text.length > 200) articleText = text.slice(0, MAX_ARTICLE_CHARS);
+      } catch {
+        articleText = undefined; // body extraction is a bonus, never load-bearing
+      }
     }
 
     if (!title) {

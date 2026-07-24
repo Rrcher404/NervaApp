@@ -21,7 +21,14 @@ export interface TranscribeResult {
   error?: string;
 }
 
-const TIMEOUT_MS = 60_000;
+/**
+ * TOTAL budget across ALL provider attempts, kept under the route's
+ * maxDuration (60s). Previously each attempt got its own 60s, so two providers
+ * could run 120s against a 60s function cap — Vercel would kill it before the
+ * fallback finished, turning graceful degradation into a 504. A shared deadline
+ * fixes that.
+ */
+const TOTAL_BUDGET_MS = 50_000;
 /** A current, stable Gemini alias — tracks the latest flash-lite, so it can't
  *  go stale the way a pinned 2.5-flash-lite did. */
 const GEMINI_MODEL = "gemini-flash-lite-latest";
@@ -31,12 +38,12 @@ async function blobToBase64(blob: Blob): Promise<string> {
   return buf.toString("base64");
 }
 
-/** Gemini native audio transcription. */
-async function viaGemini(audio: Blob): Promise<TranscribeResult> {
+/** Gemini native audio transcription. `deadline` is the shared budget's end. */
+async function viaGemini(audio: Blob, deadline: number): Promise<TranscribeResult> {
   const key = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   if (!key) return { ok: false, provider: "gemini", error: "no key" };
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), Math.max(0, deadline - Date.now()));
   try {
     const data = await blobToBase64(audio);
     const body = {
@@ -87,9 +94,10 @@ async function viaWhisper(
   baseUrl: string,
   key: string,
   model: string,
+  deadline: number,
 ): Promise<TranscribeResult> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), Math.max(0, deadline - Date.now()));
   try {
     const form = new FormData();
     form.append("file", audio, "capture.webm");
@@ -118,10 +126,17 @@ async function viaWhisper(
 }
 
 export async function transcribe(audio: Blob): Promise<TranscribeResult> {
+  // One shared deadline across all attempts — the sum can never exceed the
+  // route's function cap (the header's "Gemini primary" ordering, now matched
+  // by the code).
+  const deadline = Date.now() + TOTAL_BUDGET_MS;
   const attempts: Array<() => Promise<TranscribeResult>> = [];
 
-  // Groq first if present (the plan's cost-primary), then Gemini (the funded,
-  // one-vendor choice), then OpenAI. Each is skipped when its key is absent.
+  // Gemini first — the funded, one-vendor choice (§9). Groq and OpenAI are
+  // fallbacks that light up only if their keys appear. Each skipped without a key.
+  if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    attempts.push(() => viaGemini(audio, deadline));
+  }
   if (process.env.GROQ_API_KEY) {
     attempts.push(() =>
       viaWhisper(
@@ -130,15 +145,20 @@ export async function transcribe(audio: Blob): Promise<TranscribeResult> {
         "https://api.groq.com/openai/v1",
         process.env.GROQ_API_KEY!,
         "whisper-large-v3-turbo",
+        deadline,
       ),
     );
   }
-  if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-    attempts.push(() => viaGemini(audio));
-  }
   if (process.env.OPENAI_API_KEY) {
     attempts.push(() =>
-      viaWhisper(audio, "openai", "https://api.openai.com/v1", process.env.OPENAI_API_KEY!, "whisper-1"),
+      viaWhisper(
+        audio,
+        "openai",
+        "https://api.openai.com/v1",
+        process.env.OPENAI_API_KEY!,
+        "whisper-1",
+        deadline,
+      ),
     );
   }
 
@@ -148,6 +168,7 @@ export async function transcribe(audio: Blob): Promise<TranscribeResult> {
 
   let last: TranscribeResult = { ok: false, error: "no attempt made" };
   for (const attempt of attempts) {
+    if (Date.now() >= deadline) break; // out of shared budget — degrade now
     last = await attempt();
     if (last.ok) return last;
   }

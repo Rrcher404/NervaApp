@@ -28,6 +28,8 @@ export interface LocalCatch {
   sourceUrl?: string;
   sourceMeta: SourceMeta;
   transcript?: string;
+  /** Readability's cleaned article body — raw source text feeding item 3's embeddings. */
+  articleText?: string;
   claimExtract?: string;
   status: CatchStatus;
   capturedAt: string; // ISO — the moment of capture, even offline
@@ -44,6 +46,8 @@ export interface LocalCatch {
   audioType?: string;
   /** Voice catches only: recording length, for the provenance line. */
   durationMs?: number;
+  /** Voice draft in progress — excluded from transcription until finalised. */
+  recording?: boolean;
 }
 
 const DB_NAME = "sieve";
@@ -197,19 +201,24 @@ export async function addCatch(rawContent: string): Promise<LocalCatch> {
  * external API down, and Whisper is an external API. A voice memo captured
  * offline sits safely on disk until the network returns, exactly like a link.
  *
- * IndexedDB stores Blobs natively, so the audio itself is durable — a failed
- * transcription never costs the user their recording, only its text.
+ * Audio is stored as an ArrayBuffer, not a Blob: WebKit (iOS Safari) fails to
+ * persist Blobs in IndexedDB, which would break voice on the primary mobile
+ * target. The Blob is reconstructed only at upload.
  */
 export async function addVoiceCatch(
   audioBlob: Blob,
   durationMs: number,
 ): Promise<LocalCatch> {
-  // Read to an ArrayBuffer BEFORE the write — Blobs don't persist on WebKit.
   const audioData = await audioBlob.arrayBuffer();
+  if (audioData.byteLength === 0) {
+    // An empty recording is not a capture. Reject at the sacred write itself,
+    // not only in the UI, so no zero-byte catch can ever enter the pipeline.
+    throw new Error("empty recording");
+  }
   const item: LocalCatch = {
     id: crypto.randomUUID(),
     type: "voice",
-    rawContent: "", // filled by the transcript; the audio IS the raw material
+    rawContent: "",
     sourceMeta: {},
     status: "raw",
     capturedAt: new Date().toISOString(),
@@ -223,18 +232,93 @@ export async function addVoiceCatch(
   return item;
 }
 
+/**
+ * Durable-recording lifecycle. The problem this solves: a recording held only
+ * in memory until `stop()` is lost entirely if the phone dies mid-ramble — the
+ * app's own named worst case (4% battery). So the recorder creates a draft at
+ * START, flushes the growing audio to disk every few seconds, and finalises at
+ * STOP. A crash leaves a `recording:true` draft on disk; recoverVoiceDrafts()
+ * adopts it on next load so the ramble survives.
+ */
+export async function startVoiceCatch(): Promise<string> {
+  const id = crypto.randomUUID();
+  const item: LocalCatch = {
+    id,
+    type: "voice",
+    rawContent: "",
+    sourceMeta: {},
+    status: "raw",
+    capturedAt: new Date().toISOString(),
+    synced: false,
+    enrichAttempts: 0,
+    recording: true, // excluded from transcription until finalised or recovered
+    durationMs: 0,
+  };
+  await tx("readwrite", (s) => s.put(item));
+  return id;
+}
+
+/** Flush the in-progress audio to disk. Called every few seconds while recording. */
+export async function flushVoiceAudio(
+  id: string,
+  audioData: ArrayBuffer,
+  audioType: string,
+  durationMs: number,
+): Promise<void> {
+  if (audioData.byteLength === 0) return;
+  await updateCatch(id, { audioData, audioType, durationMs });
+}
+
+/** Finalise a draft: it stops being a draft and becomes eligible for transcription. */
+export async function finalizeVoiceCatch(
+  id: string,
+  audioData: ArrayBuffer,
+  audioType: string,
+  durationMs: number,
+): Promise<LocalCatch | undefined> {
+  if (audioData.byteLength === 0) {
+    // Nothing was actually captured — drop the empty draft rather than keep it.
+    await deleteCatch(id);
+    return undefined;
+  }
+  return updateCatch(id, { audioData, audioType, durationMs, recording: false });
+}
+
+/**
+ * Crash recovery: any draft still marked `recording:true` on load is a ramble
+ * that outlived a dead battery or a killed tab. Adopt whatever audio was
+ * flushed (drop it only if truly empty) so it gets transcribed like any catch.
+ */
+export async function recoverVoiceDrafts(): Promise<void> {
+  const all = await listCatches();
+  for (const c of all) {
+    if (c.type === "voice" && c.recording) {
+      if (c.audioData && c.audioData.byteLength > 0) {
+        await updateCatch(c.id, { recording: false });
+      } else {
+        await deleteCatch(c.id);
+      }
+    }
+  }
+}
+
+async function deleteCatch(id: string): Promise<void> {
+  await tx("readwrite", (s) => s.delete(id));
+}
+
 /** Reconstruct the recording Blob from stored bytes, for upload. */
 export function catchAudioBlob(c: LocalCatch): Blob | null {
   if (!c.audioData) return null;
   return new Blob([c.audioData], { type: c.audioType || "audio/webm" });
 }
 
-/** Voice catches still awaiting a transcript. */
+/** Voice catches still awaiting a transcript. Drafts (recording:true) excluded. */
 export async function pendingTranscription(): Promise<LocalCatch[]> {
   const all = await listCatches();
   return all.filter(
     (c) =>
       c.type === "voice" &&
+      !c.recording &&
       !!c.audioData &&
       (c.status === "raw" || c.status === "sieving") &&
       c.enrichAttempts < MAX_ENRICH_ATTEMPTS,
@@ -286,15 +370,23 @@ export async function updateCatch(
       if (statusFromAttempts) {
         next.status = attempts >= MAX_ENRICH_ATTEMPTS ? "failed_extract" : "raw";
       }
-      // Never downgrade a catch that is already cited — and that protection
-      // has to cover the METADATA too, not just the status field. A losing
-      // sweep's failure would otherwise merge its extractError in alongside
-      // the winning sweep's good title.
+      // Never downgrade a catch that is already sieved — covering STATUS, the
+      // metadata, AND the transcript. Success looks different per type: a link's
+      // marker is sourceMeta.title, a voice catch's is its transcript. Keying
+      // only on title (the old bug) left a sieved voice catch's transcript
+      // unprotected, so a losing cross-tab sweep could overwrite a good
+      // transcript with an empty one.
       if (existing.status === "sieved") {
         next.status = "sieved";
-        next.sourceMeta = fields.sourceMeta?.title
-          ? next.sourceMeta // a newer successful extraction may still update it
-          : { ...existing.sourceMeta };
+        const incomingIsBetter =
+          existing.type === "voice"
+            ? !!fields.transcript // only a real new transcript may replace one
+            : !!fields.sourceMeta?.title;
+        if (!incomingIsBetter) {
+          next.sourceMeta = { ...existing.sourceMeta };
+          next.transcript = existing.transcript;
+          next.rawContent = existing.rawContent;
+        }
       }
 
       const put = store.put(next);

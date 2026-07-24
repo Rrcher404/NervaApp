@@ -14,6 +14,14 @@ const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
  * — the client treats "couldn't transcribe, saved anyway" as expected.
  */
 export async function POST(req: NextRequest) {
+  // Reject on Content-Length BEFORE parsing. formData() buffers the whole body
+  // first, so a post-hoc .size check pays exactly the memory cost the cap is
+  // meant to prevent — an 800MB upload spiked +1.7GB before being rejected.
+  const declared = Number(req.headers.get("content-length") ?? "0");
+  if (declared > MAX_AUDIO_BYTES + 1024 * 1024) {
+    return NextResponse.json({ ok: false, error: "audio too large" }, { status: 413 });
+  }
+
   let audio: Blob;
   try {
     const form = await req.formData();

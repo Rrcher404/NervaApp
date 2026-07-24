@@ -7,9 +7,40 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { addCatch, listCatches, MAX_ENRICH_ATTEMPTS, type LocalCatch } from "@/lib/store";
+import {
+  addCatch,
+  listCatches,
+  recoverVoiceDrafts,
+  catchAudioBlob,
+  MAX_ENRICH_ATTEMPTS,
+  type LocalCatch,
+} from "@/lib/store";
 import { useSweep } from "@/lib/sieve/useSweep";
 import VoiceRecorder from "@/components/VoiceRecorder";
+
+/** Play a voice catch's recording — lets a user verify a misheard transcript. */
+function VoicePlayback({ catchItem }: { catchItem: LocalCatch }) {
+  const play = useCallback(() => {
+    const blob = catchAudioBlob(catchItem);
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.onended = () => URL.revokeObjectURL(url);
+    audio.onerror = () => URL.revokeObjectURL(url);
+    void audio.play().catch(() => URL.revokeObjectURL(url));
+  }, [catchItem]);
+  if (!catchItem.audioData) return null;
+  return (
+    <button
+      type="button"
+      data-testid="voice-play"
+      onClick={play}
+      className="mt-2 border-[3px] border-ink bg-ground px-3 py-1 font-mono text-[11px] font-bold uppercase tracking-wide text-ink transition-transform active:translate-x-[2px] active:translate-y-[2px]"
+    >
+      ▸ Play recording
+    </button>
+  );
+}
 
 /** Connection state as an external store — no setState-in-effect. */
 function subscribeOnline(cb: () => void) {
@@ -84,8 +115,12 @@ export default function Capture() {
     // IndexedDB is client-only and has no server snapshot, so hydrating the
     // list on mount is unavoidable. The setState happens in a microtask after
     // the await, not synchronously in the effect body — no cascading render.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refresh().then(sweep);
+    // recoverVoiceDrafts() first: adopt any recording that outlived a crash so
+    // the ramble gets transcribed instead of sitting as an orphaned draft.
+    void recoverVoiceDrafts()
+      .catch(() => {})
+      .then(refresh)
+      .then(sweep);
     const onReconnect = () => void sweep();
     window.addEventListener("online", onReconnect);
     const iv = setInterval(() => void sweep(), 15_000);
@@ -343,6 +378,8 @@ export default function Capture() {
                     {c.sourceUrl}
                   </p>
                 )}
+
+                {c.type === "voice" && <VoicePlayback catchItem={c} />}
               </li>
             ))}
           </ul>

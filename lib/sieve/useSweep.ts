@@ -8,6 +8,19 @@ import {
   catchAudioBlob,
   type LocalCatch,
 } from "@/lib/store";
+import type { ExtractResult } from "@/lib/sieve/extract";
+import type { TranscribeResult } from "@/lib/sieve/transcribe";
+
+/** Interleave two lists round-robin, so neither type head-of-line-blocks the other. */
+function roundRobin<T>(a: T[], b: T[]): T[] {
+  const out: T[] = [];
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    if (i < a.length) out.push(a[i]);
+    if (i < b.length) out.push(b[i]);
+  }
+  return out;
+}
 
 /**
  * The enrichment sweep, extracted from Capture so voice and link paths share
@@ -25,13 +38,7 @@ export function useSweep(refresh: () => Promise<void>) {
 
   const enrichLink = useCallback(
     async (c: LocalCatch) => {
-      let data: {
-        ok?: boolean;
-        title?: string;
-        siteName?: string;
-        description?: string;
-        error?: string;
-      } | null = null;
+      let data: ExtractResult | null = null;
       try {
         const res = await fetch("/api/enrich", {
           method: "POST",
@@ -45,12 +52,17 @@ export function useSweep(refresh: () => Promise<void>) {
       if (data?.ok) {
         await updateCatch(c.id, {
           status: "sieved",
+          // articleText / author / publishedAt are persisted now, not discarded —
+          // item 3's embeddings and claim extraction read them off the catch.
           sourceMeta: {
             title: data.title,
             siteName: data.siteName,
             description: data.description,
+            author: data.author,
+            publishedAt: data.publishedAt,
             extractError: undefined,
           },
+          articleText: data.articleText,
           bumpAttempts: true,
         });
       } else {
@@ -69,8 +81,18 @@ export function useSweep(refresh: () => Promise<void>) {
   const transcribeVoice = useCallback(
     async (c: LocalCatch) => {
       const blob = catchAudioBlob(c);
-      if (!blob) return;
-      let data: { ok?: boolean; transcript?: string; error?: string } | null = null;
+      if (!blob) {
+        // No audio on a pending voice catch (shouldn't happen — pendingTranscription
+        // filters on audioData). If it ever does, TERMINATE it instead of looping
+        // forever on "queued for transcription" with no error and no progress.
+        await updateCatch(c.id, {
+          sourceMeta: { extractError: "no audio recorded" },
+          bumpAttempts: true,
+          statusFromAttempts: true,
+        });
+        return;
+      }
+      let data: TranscribeResult | null = null;
       try {
         const form = new FormData();
         form.append("audio", blob, "capture.webm");
@@ -116,7 +138,13 @@ export function useSweep(refresh: () => Promise<void>) {
         return; // store unreachable; refresh() already told the user
       }
 
-      for (const c of [...links, ...voice]) {
+      // Round-robin so a backlog of slow/dead links can't starve a ready voice
+      // transcription (or vice versa) — one type's queue never blocks the other.
+      for (const c of roundRobin(links, voice)) {
+        // A link catch with no sourceUrl can't be enriched — invariant holds
+        // today (detectType pairs type:"link" with a set sourceUrl), guarded
+        // here for defence in depth after the item-2 sweep extraction.
+        if (c.type === "link" && !c.sourceUrl) continue;
         try {
           await updateCatch(c.id, { status: "sieving" });
           await refresh();

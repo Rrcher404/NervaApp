@@ -190,6 +190,42 @@ test("cold open, and a catch with its citation, meet AA", async ({ page }) => {
   assertAA(await sampleContrast(page), "after a catch");
 });
 
+test("the recording state (accent-filled button) meets AA", async ({ page }) => {
+  // Halvorsen's recurring finding: the guard never rendered the recording state.
+  // Install a fake mic, actually enter it, and measure.
+  await page.addInitScript(() => {
+    const track = { stop() {}, kind: "audio" };
+    const stream = { getTracks: () => [track] };
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: () => Promise.resolve(stream) },
+    });
+    class FakeRec {
+      state = "inactive";
+      mimeType = "audio/webm";
+      ondataavailable: ((e: { data: Blob }) => void) | null = null;
+      onstop: (() => void) | null = null;
+      static isTypeSupported() {
+        return true;
+      }
+      start() {
+        this.state = "recording";
+      }
+      stop() {
+        this.state = "inactive";
+        this.onstop?.();
+      }
+    }
+    (window as unknown as { MediaRecorder: unknown }).MediaRecorder = FakeRec;
+  });
+  await page.goto("/");
+  await page.evaluate(() => indexedDB.deleteDatabase("sieve"));
+  await page.reload();
+  await page.getByTestId("voice-record").click();
+  await expect(page.getByTestId("voice-record")).toHaveAttribute("data-recording", "true");
+  assertAA(await sampleContrast(page), "recording state");
+});
+
 test("the crisis surfaces meet AA too", async ({ page }) => {
   // Halvorsen: "the two surfaces built for an actual crisis are exactly the two
   // the guard has never once looked at."
