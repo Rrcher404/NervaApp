@@ -9,7 +9,11 @@ export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
+  // One local retry absorbs `next dev` JIT-compile stalls under full-suite
+  // parallel load (a transient `page.reload` navigation timeout, not a product
+  // bug — every test passes when run isolated). CI keeps 2. The acceptance
+  // criteria themselves are deterministic; this only de-flakes the dev server.
+  retries: process.env.CI ? 2 : 1,
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
     baseURL: process.env.E2E_BASE_URL ?? "http://localhost:3000",

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { sieveForUser } from "@/lib/sieve/pipeline";
+import { sieveForUser, generateCardsForUser } from "@/lib/sieve/pipeline";
 import { discoverUsers } from "@/lib/sieve/discovery";
 
 export const runtime = "nodejs";
@@ -62,6 +62,12 @@ export async function POST(req: NextRequest) {
           runError = (runError ? runError + "; " : "") + `user ${uid}: ${res.error}`;
         }
         if (!res.remaining) break;
+      }
+      // once catches are sieved, generate their question cards (best-effort,
+      // bounded, failures recorded to events — never blocks the drain).
+      const cards = await generateCardsForUser(admin, uid, started + 50_000);
+      if (cards.error) {
+        runError = (runError ? runError + "; " : "") + `user ${uid} cards: ${cards.error}`;
       }
     } catch (e) {
       runError = (runError ? runError + "; " : "") + (e instanceof Error ? e.message : "user failed");

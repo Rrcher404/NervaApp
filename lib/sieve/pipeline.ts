@@ -1,8 +1,11 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { embed, embeddableText, EMBEDDING_MODEL } from "@/lib/sieve/embed";
+import { generateQuestion } from "@/lib/sieve/questions";
+import { newCard } from "@/lib/srs";
 
 export const ASSIGN_THRESHOLD = 0.72;
 export const SIEVE_BATCH = 20;
+export const CARD_BATCH = 10; // question cards generated per drain pass per user
 
 export interface SieveResult {
   ok: boolean;
@@ -125,4 +128,55 @@ export async function sieveForUser(
     failed,
     remaining: ranOut || (pending?.length ?? 0) === SIEVE_BATCH,
   };
+}
+
+/**
+ * Generate one question card per meaningful sieved catch (§9 stage 2). Clerical:
+ * the machine writes the elaborative-interrogation QUESTION; the human will
+ * answer it in their own words later (the epistemic rep). Best-effort and
+ * idempotent — a catch that already has a card is skipped; a catch we can't
+ * question this pass is simply retried next pass (never blocks threading, never
+ * loses the catch). Every failure is recorded, not swallowed.
+ */
+export async function generateCardsForUser(
+  admin: ReturnType<typeof supabaseAdmin>,
+  userId: string,
+  deadlineMs = Date.now() + 50_000,
+): Promise<{ created: number; failed: number; error?: string }> {
+  const { data: rows, error } = await admin.rpc("catches_needing_cards", {
+    p_user_id: userId,
+    p_limit: CARD_BATCH,
+  });
+  if (error) {
+    await logFailure(admin, userId, "card_discovery_failed", "", error.message);
+    return { created: 0, failed: 1, error: error.message };
+  }
+
+  let created = 0;
+  let failed = 0;
+  for (const c of (rows as
+    | { id: string; raw_content: string; transcript: string | null; thread_id: string; source_meta: { title?: string } | null }[]
+    | null) ?? []) {
+    if (Date.now() > deadlineMs) break;
+    const text =
+      c.source_meta?.title || c.transcript || c.raw_content || "";
+    const question = await generateQuestion(text);
+    if (!question) continue; // vacuous or transient — retried next pass
+    const { fsrs_state, due_at } = newCard();
+    const { error: insErr } = await admin.from("question_cards").insert({
+      user_id: userId,
+      catch_id: c.id,
+      thread_id: c.thread_id,
+      question,
+      fsrs_state,
+      due_at,
+    });
+    if (insErr) {
+      failed++;
+      await logFailure(admin, userId, "card_insert_failed", c.id, insErr.message);
+    } else {
+      created++;
+    }
+  }
+  return { created, failed };
 }

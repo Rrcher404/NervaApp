@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Instrument_Serif, Inter, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
+import Nav from "@/components/Nav";
 
 /* The two-voice type rule (DESIGN-PRINCIPLES §5):
    serif = the human's material · mono = the machine speaking.
@@ -38,7 +39,10 @@ export default function RootLayout({
       lang="en"
       className={`${instrumentSerif.variable} ${inter.variable} ${plexMono.variable} h-full antialiased`}
     >
-      <body className="flex min-h-full flex-col bg-ground text-ink">{children}</body>
+      <body className="flex min-h-full flex-col bg-ground text-ink">
+        <Nav />
+        {children}
+      </body>
     </html>
   );
 }
