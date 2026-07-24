@@ -409,3 +409,78 @@ the room.
 - `journal/screens/item2-01-record-button.png` — the voice affordance, one tap
 - `journal/screens/item2-02-transcribed.png` — transcript in serif, provenance in mono
 - Full narrative how-to: `journal/committee-process.html`
+
+---
+
+## Item 2 — Voice + scraping · 2026-07-23 · **PROCEED**
+
+**Acceptance criterion:** a 60s voice ramble becomes a cited, transcribed catch.
+**Verified LIVE** on production (the-sieve.vercel.app): real speech POSTed to /api/transcribe
+returned a verbatim transcript via Gemini native audio. Two rework cycles; final gate:
+
+| Dim | What | Grader | Score |
+|---|---|---|---|
+| 1 | Acceptance criterion (real browser / live endpoint) | operator* | **9**/10 |
+| 2 | Worst-day UX | Halvorsen | **9**/10 |
+| 3 | Robustness | Voss | **8**/10 |
+| 4 | Interface hospitality | Halvorsen | **9**/10 |
+| 5 | Constitution + banned list | Marchetti | **10**/10 CLEAR |
+| | | **Composite** | **9.0** |
+
+*\*Dim 1 operator-graded, not persona-graded: Jene stopped the Kowalczyk agent mid-run and it
+could not be resumed. With Jene's explicit decision, dim 1 was scored from live production proof
+(the endpoint returns a verbatim transcript) + 102 E2E specs covering the flow on two engines,
+rather than relaunching the grader. Recorded honestly as an operator verification.*
+
+**Constitution: CLEAR.** Marchetti classified transcription and Readability both as clerical
+(dictation, boilerplate-removal), verified the transcribe prompt is verbatim-only at
+temperature 0, and confirmed nothing ghostwrites.
+
+### The deviation, and why it's more on-plan than the plan
+
+Plan §9 names Groq whisper primary + OpenAI Whisper fallback. At build time there is no Groq
+key, the OpenAI key is out of quota, and the plan's `gemini-2.5-flash-lite` is deprecated
+(Jul 2026, Gemini 3.x is current). Gemini transcribes audio natively and verbatim (verified
+end-to-end), and consolidating transcription onto Gemini honours §9's **stronger** principle —
+"one vendor, one SDK, one bill" — better than a three-vendor stack. Gemini primary; Groq +
+OpenAI light up automatically if keys appear. Model pinned to `gemini-flash-lite-latest` so it
+can't go stale the way a pinned 2.5 did.
+
+### Two rework cycles — the honest record
+
+- **Initial gate:** dims came in 9/9/5/7/10 with a ~20-item fix list across four graders.
+- **Rework cycle 1:** fixed the lot — recording durability (draft + 3s flush + crash
+  recovery), all mic-stream leaks (double-tap, unmount-during-grant, throw-on-start,
+  guarded stop), the Readability hang, the body-DoS, the voice-blind never-downgrade guard,
+  the transcribe timeout budget + Gemini-first order, the sweep round-robin, the articleText
+  wire-through, audio playback, and the contrast guard's recording-state blind spot.
+  Regrade: Halvorsen 9/9, Marchetti stood — **but Voss dropped dim 3 to 4**, proving both my
+  DoS "fixes" were naive and still live.
+- **Rework cycle 2 (the cap):** the DoS fixes done properly. The Readability depth guard was
+  defeated by `<div></span>` (an unmatched close tag the regex counted, undercounting to
+  "safe" while the real DOM was 1500 deep) → replaced with a walk of the actual parsed tree.
+  The Content-Length check was a no-op against chunked transfer → replaced with a streaming
+  byte-counter (`readBodyCapped`) that aborts mid-stream regardless of headers, now also
+  time-bounded. The flush/finalize race → a guarded single-transaction write that no-ops once
+  finalised. Regrade: **Voss 8, both HIGHs verified closed** (21,778ms → 9.2ms; +1.5GB → +37MB).
+
+### The thing nobody said
+
+Item 1's lesson was "every serious bug was introduced by a fix." Item 2 sharpened it: **the
+committee caught a fix that was itself naive — twice in one finding.** My first DoS patches
+*looked* like fixes, passed a green suite, and were defeated by two characters and a missing
+header. The gate's value wasn't the 9.0; it was Voss refusing to accept a plausible-looking
+fix and re-running the exact attack that beat it before. The generalizable rule, now proven
+twice: **a fix for a security finding must be verified by re-running the original exploit, not
+by reading the patch.** That belongs in Adeyemi's checklist as a hard requirement, not a
+suggestion. Voss's parting MEDIUM (the read had a byte cap but no time cap) was closed before
+this entry was written — the same instinct, applied one turn early.
+
+### Punch list (non-blocking, revisit)
+
+- The 3s flush window means a hard instant-kill can lose the last ~3s of a ramble — the honest
+  ceiling for anything in a browser tab (Halvorsen). `pagehide` is best-effort, not a guarantee.
+- Mic-denied copy reassures + offers the type fallback but doesn't name concrete permission steps.
+- The Gemini "verbatim" transcription is enforced by prompt discipline + temperature 0, not by
+  architecture (Marchetti) — a spoken adversarial instruction rides the same channel. A bad
+  transcript sits visibly wrong on the card, never trusted downstream, but it's a watch item.

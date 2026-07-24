@@ -17,15 +17,35 @@ import type { NextRequest } from "next/server";
 export async function readBodyCapped(
   req: NextRequest,
   cap: number,
+  timeoutMs = 15_000,
 ): Promise<Uint8Array | null> {
   const reader = req.body?.getReader();
   if (!reader) return new Uint8Array(0);
+
+  // A byte cap and a time cap are different guarantees (Voss). Without a
+  // deadline, a slow trickle-feed under the byte cap holds a connection open
+  // for the platform's full request timeout — /api/enrich has no maxDuration
+  // backstop at all. This bounds the whole read, not just its size.
+  const deadline = Date.now() + timeoutMs;
 
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        await reader.cancel().catch(() => {});
+        return null; // took too long — drop it
+      }
+      const read = (await Promise.race([
+        reader.read(),
+        new Promise<"timeout">((r) => setTimeout(() => r("timeout"), remaining)),
+      ])) as ReadableStreamReadResult<Uint8Array> | "timeout";
+      if (read === "timeout") {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      const { done, value } = read;
       if (done) break;
       if (!value) continue;
       total += value.byteLength;

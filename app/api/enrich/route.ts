@@ -4,6 +4,7 @@ import { readBodyCapped } from "@/lib/sieve/read-body";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 20; // a backstop; readBodyCapped also time-bounds the read
 
 /** A URL is short. Anything past this is not a URL — refuse before parsing. */
 const MAX_BODY_BYTES = 64 * 1024;

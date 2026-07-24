@@ -60,4 +60,19 @@ describe("readBodyCapped — bounded regardless of Content-Length", () => {
     expect(result).not.toBeNull();
     expect(result!.byteLength).toBe(0);
   });
+
+  it("aborts a slow trickle-feed that never completes (time cap, not just byte cap)", async () => {
+    // A stream that dribbles forever under the byte cap must not hold open.
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        // one tiny chunk, then never resolve again — a trickle that stalls
+        controller.enqueue(new Uint8Array(8));
+      },
+    });
+    const req = { body } as unknown as NextRequest;
+    const start = Date.now();
+    const result = await readBodyCapped(req, 1024 * 1024, 300); // 300ms deadline
+    expect(result).toBeNull();
+    expect(Date.now() - start).toBeLessThan(2000); // bailed near the deadline
+  });
 });
