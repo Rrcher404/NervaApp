@@ -173,6 +173,15 @@ test("transcription failure keeps the audio — couldn't transcribe, saved anywa
 });
 
 test("the record button is present and one-tap", async ({ page }) => {
+  // The recorder renders nothing when the platform has no MediaRecorder
+  // (VoiceRecorder.tsx: `if (!supported) return null`) — correct behaviour, not
+  // a bug. Headless mobile WebKit (the iPhone 13 project) has no MediaRecorder,
+  // so there is no button to assert. Skip there; the mocked-pipeline voice tests
+  // above (which inject audio straight into the store) still run on every project.
+  const canRecord = await page.evaluate(
+    () => typeof MediaRecorder !== "undefined" && !!navigator.mediaDevices?.getUserMedia,
+  );
+  test.skip(!canRecord, "platform has no MediaRecorder — recorder correctly hides");
   const rec = page.getByTestId("voice-record");
   await expect(rec).toBeVisible();
   await expect(rec).toHaveText(/record/i);

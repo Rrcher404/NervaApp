@@ -450,3 +450,53 @@ export async function unsyncedCatches(): Promise<LocalCatch[]> {
   const all = await listCatches();
   return all.filter((c) => !c.synced);
 }
+
+/**
+ * A reset must NEVER destroy a catch that is still being made. An in-progress
+ * recording (recording:true) belongs to whoever is at the machine right now —
+ * it is the one thing capture-is-sacred protects even against a deliberate wipe.
+ * Every clear path below routes through this predicate so the rule lives in one
+ * place and cannot drift.
+ */
+function isInFlight(c: LocalCatch): boolean {
+  return c.recording === true;
+}
+
+/**
+ * Delete every catch that has been safely pushed to Supabase (synced === true).
+ *
+ * WHY THIS EXISTS: IndexedDB is origin-scoped, so after a stranger converts
+ * (signs in) their catches sync to the server but the local copies LINGER — and
+ * on a shared / kiosk browser those lingering catches then bleed into the next
+ * anonymous visitor. Reclaiming synced rows closes that leak the moment the
+ * durable copy exists elsewhere.
+ *
+ * Capture is sacred: a catch that is NOT yet synced (offline, still enriching,
+ * or an in-progress recording) is provably still local-only, so it is never
+ * touched. Only rows with a confirmed server copy are removed. Returns the count.
+ */
+export async function clearSyncedCatches(): Promise<number> {
+  const all = await listCatches();
+  const removable = all.filter((c) => c.synced && !isInFlight(c));
+  // Per-key deletes, not a store.clear(): a capture that lands DURING this sweep
+  // was never in `all` and so survives — the constitutionally correct direction.
+  for (const c of removable) await deleteCatch(c.id);
+  return removable.length;
+}
+
+/**
+ * Wipe the local store for a fresh visitor — the "start fresh" affordance and
+ * the presenter's demo reset before each stranger walk. Without this, a prior
+ * anonymous visitor's catches persist for the next person on a shared browser.
+ *
+ * Capture is sacred: an in-progress recording is preserved (see isInFlight) —
+ * even a deliberate reset must not delete a catch that is still being made. A
+ * capture that lands mid-sweep also survives, since deletes target only the
+ * snapshot read at entry. Returns the count removed.
+ */
+export async function clearLocalCatches(): Promise<number> {
+  const all = await listCatches();
+  const removable = all.filter((c) => !isInFlight(c));
+  for (const c of removable) await deleteCatch(c.id);
+  return removable.length;
+}

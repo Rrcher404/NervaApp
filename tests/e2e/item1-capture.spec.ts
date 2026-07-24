@@ -141,6 +141,9 @@ test("hostile input is captured verbatim, not executed", async ({ page }) => {
 });
 
 test("a 200KB paste is captured without dropping it", async ({ page }) => {
+  // A 200KB fill + persist + reload is legitimately slow under loaded CI
+  // (~25s observed); triple the timeout so a real slow path isn't read as a drop.
+  test.slow();
   const big = "x".repeat(200_000);
   await capture(page, big);
   await expect(page.getByTestId("catch-item")).toHaveCount(1);

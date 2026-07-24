@@ -1,0 +1,133 @@
+name: Reliability probe
+
+# The OFF-PLATFORM watcher. Everything else in the annunciation chain — the
+# drain, the audit, ops_alerts — lives inside the same Supabase project it is
+# meant to watch, so a pg_cron pause silences the watcher and the watched
+# together. This job runs on GitHub's infrastructure, outside that project, and
+# curls /api/health from the outside. If Supabase is paused the drain heartbeat
+# goes stale, /api/health returns 503, and THIS job (which GitHub still runs)
+# fails and pages the operator. The watcher cannot be paused by the thing it
+# watches. (MASTER-PLAN §13 — the witness pattern, in infrastructure.)
+#
+# Cost: $0. GitHub-hosted minutes are free for this cadence.
+#
+# TWO THINGS THE OPERATOR MUST DO for this to work (see docs/reliability-probe.md):
+#   1. Add the AUDIT_SECRET repo secret (same value as Vercel's AUDIT_SECRET).
+#   2. This file must live on the DEFAULT branch (main) — GitHub only schedules
+#      workflows from the default branch.
+
+on:
+  schedule:
+    # Every 10 minutes. GitHub's scheduler is best-effort and often runs late
+    # under load, so don't set this tighter than the endpoint's freshness
+    # windows can tolerate (drain 30m, audit 26h) — 10m gives ~3 samples per
+    # drain window even with drift.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {} # so the operator can hit "Run workflow" to check on demand
+
+permissions:
+  contents: read
+
+concurrency:
+  # A slow run must never stack on top of the next scheduled one.
+  group: health-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe /api/health
+        id: probe
+        env:
+          AUDIT_SECRET: ${{ secrets.AUDIT_SECRET }}
+          HEALTH_URL: https://the-sieve.vercel.app/api/health
+        run: |
+          set -euo pipefail
+
+          if [ -z "${AUDIT_SECRET:-}" ]; then
+            echo "::error::AUDIT_SECRET repo secret is not set — the probe cannot authenticate and would page forever. Add it (see docs/reliability-probe.md), then re-run."
+            exit 1
+          fi
+
+          # curl without -f: HTTP errors (503, 401) still exit 0 and print the
+          # status via -w, so we can branch on the code. A real connection
+          # failure/timeout exits non-zero and we record it as 000.
+          # The secret goes in a HEADER, never the URL (query strings get logged
+          # and cached). GitHub masks the secret value in logs automatically.
+          probe() {
+            curl -sS -m 20 \
+              -H "x-audit-secret: ${AUDIT_SECRET}" \
+              -o body.json -w '%{http_code}' \
+              "${HEALTH_URL}"
+          }
+
+          # `probe` prints curl's own status (000 on a connection failure) and may
+          # exit non-zero; `|| true` swallows the exit WITHOUT appending a second
+          # "000" (the old `|| echo 000` produced "000000"). Empty → 000.
+          code="$(probe || true)"; code="${code:-000}"
+          if [ "$code" != "200" ]; then
+            # One re-check after a pause, so a single Vercel cold-start blip or a
+            # transient network error does not page. A real outage (Supabase
+            # paused, embed key dead, backlog) stays failed and pages.
+            echo "First probe returned HTTP ${code}; re-checking in 30s to rule out a transient blip..."
+            sleep 30
+            # `probe` prints curl's own status (000 on a connection failure) and may
+          # exit non-zero; `|| true` swallows the exit WITHOUT appending a second
+          # "000" (the old `|| echo 000` produced "000000"). Empty → 000.
+          code="$(probe || true)"; code="${code:-000}"
+          fi
+
+          body="$(cat body.json 2>/dev/null || true)"
+          echo "HTTP ${code}"
+          echo "${body}"
+          echo "status=${code}" >> "$GITHUB_OUTPUT"
+
+          if [ "$code" = "200" ]; then
+            echo "Healthy."
+            exit 0
+          fi
+
+          # Give the operator the WHY, not just "it's down".
+          case "$code" in
+            401) reason="AUDIT_SECRET mismatch between GitHub and Vercel — the probe is blind. Rotate/realign the secret." ;;
+            503) reason="/api/health reported UNHEALTHY (liveness or efficacy). See the body above and the ops_alerts / events tables." ;;
+            000) reason="No HTTP response — the app or Vercel is unreachable (or DNS/timeout)." ;;
+            *)   reason="Unexpected HTTP ${code} from /api/health." ;;
+          esac
+          echo "::error::The Sieve is UNHEALTHY (HTTP ${code}). ${reason}"
+          exit 1
+
+      - name: Page the operator
+        if: failure()
+        env:
+          # OPTIONAL. Set this repo secret to a Slack or Discord incoming-webhook
+          # URL to get a phone push. If unset, this job's failure still triggers
+          # GitHub's built-in "failed workflow" email to the repo owner — the
+          # $0 default page. §13 puts the operator away on weekdays, so verify
+          # that email actually lands (GitHub → Settings → Notifications →
+          # Actions → "send notifications for failed workflows only").
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          msg="🚨 The Sieve reliability probe FAILED (HTTP ${{ steps.probe.outputs.status }}). The off-platform watcher could not confirm the app is healthy. Triage: ${run_url}"
+          echo "${msg}"
+
+          if [ -z "${ALERT_WEBHOOK_URL:-}" ]; then
+            echo "No ALERT_WEBHOOK_URL secret set — relying on GitHub's failed-workflow email to the repo owner."
+            exit 0
+          fi
+
+          # "text" satisfies Slack incoming webhooks; "content" satisfies Discord.
+          # Each ignores the key it doesn't use, so one payload covers both.
+          # The message contains no user-controlled text, so inline JSON is safe.
+          payload="$(printf '{"text":"%s","content":"%s"}' "${msg}" "${msg}")"
+          if curl -sS -m 15 -X POST "${ALERT_WEBHOOK_URL}" \
+               -H 'Content-Type: application/json' \
+               -d "${payload}"; then
+            echo "Webhook page sent."
+          else
+            echo "Webhook POST failed — falling back to GitHub's failed-workflow email."
+          fi

@@ -15,6 +15,7 @@ import {
   MAX_ENRICH_ATTEMPTS,
   type LocalCatch,
 } from "@/lib/store";
+import { resetLocalSession } from "@/lib/localReset";
 import { useSweep } from "@/lib/sieve/useSweep";
 import VoiceRecorder from "@/components/VoiceRecorder";
 import LessonMoment from "@/components/LessonMoment";
@@ -71,6 +72,9 @@ export default function Capture({ authed = false }: { authed?: boolean }) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [storageDown, setStorageDown] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Two-step confirm for the self-serve "start fresh" wipe — a native dialog is
+  // off-brand and a single click is too easy a way to lose a real session.
+  const [confirmingReset, setConfirmingReset] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // In-flight guard: addCatch is async, so a fast second click would otherwise
   // read the pre-clear value and mint a duplicate catch. A ref, not state —
@@ -113,16 +117,44 @@ export default function Capture({ authed = false }: { authed?: boolean }) {
     void sweep();
   }, [refresh, sweep]);
 
+  const startFresh = useCallback(async () => {
+    setConfirmingReset(false);
+    await resetLocalSession().catch(() => {});
+    await refresh();
+  }, [refresh]);
+
   useEffect(() => {
     // IndexedDB is client-only and has no server snapshot, so hydrating the
     // list on mount is unavoidable. The setState happens in a microtask after
     // the await, not synchronously in the effect body — no cascading render.
     // recoverVoiceDrafts() first: adopt any recording that outlived a crash so
     // the ramble gets transcribed instead of sitting as an orphaned draft.
-    void recoverVoiceDrafts()
-      .catch(() => {})
-      .then(refresh)
-      .then(sweep);
+    //
+    // Demo reset: a presenter opens `/?fresh=1` before each stranger walk to
+    // wipe the previous visitor's catches on a shared/kiosk browser. We reset
+    // BEFORE recovering drafts (which itself preserves any live recording), then
+    // strip the param so a reload or shared link can't wipe a real session.
+    const init = async () => {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get("fresh") === "1") {
+          await resetLocalSession().catch(() => {});
+          params.delete("fresh");
+          const qs = params.toString();
+          window.history.replaceState(
+            null,
+            "",
+            window.location.pathname + (qs ? `?${qs}` : ""),
+          );
+        }
+      } catch {
+        // A malformed URL must never block capture — fall through to the store.
+      }
+      await recoverVoiceDrafts().catch(() => {});
+      await refresh();
+      await sweep();
+    };
+    void init();
     const onReconnect = () => void sweep();
     window.addEventListener("online", onReconnect);
     const iv = setInterval(() => void sweep(), 15_000);
@@ -302,6 +334,49 @@ export default function Capture({ authed = false }: { authed?: boolean }) {
       {/* §7 lesson moment — only once a catch exists, so the cold open stays
           frictionless and the lesson lands when there's something to apply it to. */}
       {catches.length > 0 && <LessonMoment />}
+
+      {/* Shared/kiosk browsers: IndexedDB is origin-scoped, so a previous
+          visitor's catches would greet the next person. A signed-in user's
+          catches live server-side; only the anonymous, local-only list offers
+          this. Neutral utility, never a punishment — and two-step so a real
+          session isn't wiped by one stray tap. */}
+      {!authed && catches.length > 0 && (
+        <div className="mb-3 flex items-center justify-end">
+          {confirmingReset ? (
+            <span
+              data-testid="start-fresh-confirm"
+              className="flex flex-wrap items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-ink/70"
+            >
+              Clear the catches saved in this browser?
+              <button
+                type="button"
+                data-testid="start-fresh-yes"
+                onClick={() => void startFresh()}
+                className="border-2 border-ink bg-accent px-2 py-1 font-bold text-ink"
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                data-testid="start-fresh-cancel"
+                onClick={() => setConfirmingReset(false)}
+                className="border-2 border-ink bg-ground px-2 py-1 font-bold text-ink"
+              >
+                Cancel
+              </button>
+            </span>
+          ) : (
+            <button
+              type="button"
+              data-testid="start-fresh"
+              onClick={() => setConfirmingReset(true)}
+              className="font-mono text-[11px] uppercase tracking-wider text-ink/60 underline decoration-ink/30 underline-offset-2 hover:text-ink"
+            >
+              Not yours? Start fresh
+            </button>
+          )}
+        </div>
+      )}
 
       <section aria-label="Your catches">
         {catches.length === 0 ? (
