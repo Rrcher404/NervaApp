@@ -18,6 +18,7 @@ import {
 import { useSweep } from "@/lib/sieve/useSweep";
 import VoiceRecorder from "@/components/VoiceRecorder";
 import LessonMoment from "@/components/LessonMoment";
+import TheMethod from "@/components/TheMethod";
 
 /** Play a voice catch's recording — lets a user verify a misheard transcript. */
 function VoicePlayback({ catchItem }: { catchItem: LocalCatch }) {
@@ -63,7 +64,7 @@ const getOnlineServer = () => true;
  * CLAUDE.md → capture is sacred — the save is local and completes before
  * any network call is even attempted.
  */
-export default function Capture() {
+export default function Capture({ authed = false }: { authed?: boolean }) {
   const [value, setValue] = useState("");
   const [catches, setCatches] = useState<LocalCatch[]>([]);
   const [stamp, setStamp] = useState(false);
@@ -273,6 +274,31 @@ export default function Capture() {
         </div>
       )}
 
+      {/* Value before identity (§8): a stranger reaches FIRST CATCH LOGGED with no
+          account, and ONLY THEN are they invited to save it. Never a signup wall
+          before the first catch. */}
+      {!authed && catches.length > 0 && (
+        <aside
+          data-testid="save-expedition"
+          className="mb-6 flex flex-wrap items-center justify-between gap-4 border-[3px] border-ink bg-accent p-5 shadow-hard"
+        >
+          <div>
+            <p className="font-serif text-xl text-ink">Save your expedition?</p>
+            <p className="mt-1 font-sans text-sm text-ink/80">
+              Your catches live in this browser. Add an email — no password — and they’re yours on
+              every device.
+            </p>
+          </div>
+          <a
+            href="/login"
+            data-testid="save-expedition-cta"
+            className="shrink-0 border-2 border-ink bg-ground px-4 py-2 font-mono text-sm font-bold uppercase tracking-wide text-ink shadow-hard"
+          >
+            Keep it →
+          </a>
+        </aside>
+      )}
+
       {/* §7 lesson moment — only once a catch exists, so the cold open stays
           frictionless and the lesson lands when there's something to apply it to. */}
       {catches.length > 0 && <LessonMoment />}
@@ -390,6 +416,9 @@ export default function Capture() {
           </ul>
         )}
       </section>
+
+      {/* The method, static and non-AI — collapsed so the cold open pays nothing. */}
+      <TheMethod />
     </div>
   );
 }
