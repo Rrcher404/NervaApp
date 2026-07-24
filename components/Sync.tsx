@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabaseBrowser } from "@/lib/supabase/client";
 import { syncCatches, runSieve } from "@/lib/sync";
+import { clearSyncedCatches } from "@/lib/store";
 
 /**
  * Local-first → durable vault, on the FIRST authed page load — not just /threads.
@@ -25,6 +26,12 @@ export default function Sync({ userId }: { userId: string }) {
     setState("sieving");
     try {
       const { pushed } = await syncCatches(supabaseBrowser(), userId);
+      // Adopt-and-reclaim: the catches now live durably in the user's Supabase
+      // vault, so the local copies no longer need to linger — and lingering is
+      // exactly what bleeds a converted stranger's catches into the next
+      // anonymous visitor on a shared browser. Only provably-synced rows go;
+      // anything still local-only (offline, enriching, recording) is preserved.
+      await clearSyncedCatches();
       await runSieve();
       setState("done");
       // only disturb the page if we actually moved local catches up — otherwise
