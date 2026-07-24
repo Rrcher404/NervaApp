@@ -9,6 +9,7 @@ import { usePathname } from "next/navigation";
  * the machine's chrome, not the human's material. Hidden on the auth surfaces.
  */
 const LINKS = [
+  { href: "/home", label: "Home" },
   { href: "/", label: "Catch" },
   { href: "/threads", label: "Threads" },
   { href: "/return", label: "Return" },

@@ -17,6 +17,7 @@ import {
 } from "@/lib/store";
 import { useSweep } from "@/lib/sieve/useSweep";
 import VoiceRecorder from "@/components/VoiceRecorder";
+import LessonMoment from "@/components/LessonMoment";
 
 /** Play a voice catch's recording — lets a user verify a misheard transcript. */
 function VoicePlayback({ catchItem }: { catchItem: LocalCatch }) {
@@ -271,6 +272,10 @@ export default function Capture() {
           {isFirst ? "First catch logged" : "Catch logged"}
         </div>
       )}
+
+      {/* §7 lesson moment — only once a catch exists, so the cold open stays
+          frictionless and the lesson lands when there's something to apply it to. */}
+      {catches.length > 0 && <LessonMoment />}
 
       <section aria-label="Your catches">
         {catches.length === 0 ? (

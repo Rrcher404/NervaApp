@@ -3,11 +3,12 @@ import { supabaseServer } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
-/** Exchange the magic-link code for a session, then land on the threads view. */
+/** Exchange the magic-link code for a session, then land on Home (the re-entry
+ *  surface — warmth + one next thing, never a blank page). */
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
-  const next = searchParams.get("next") ?? "/threads";
+  const next = searchParams.get("next") ?? "/home";
 
   if (code) {
     const sb = await supabaseServer();
